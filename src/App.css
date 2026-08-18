@@ -1,0 +1,103 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: #0f1117;
+  color: #e6e8ee;
+}
+
+.app {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px 20px 60px;
+}
+
+h1 { margin: 0 0 4px; font-size: 26px; }
+.hint { color: #9aa0b0; margin: 0 0 24px; font-size: 14px; }
+
+.rows { display: flex; flex-direction: column; gap: 8px; }
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.row-num { width: 20px; text-align: right; color: #5b6170; font-size: 13px; flex-shrink: 0; }
+
+input {
+  background: #1a1d27;
+  border: 1px solid #2c3040;
+  border-radius: 8px;
+  color: #e6e8ee;
+  padding: 9px 12px;
+  font-size: 14px;
+  outline: none;
+}
+input:focus { border-color: #4f7cff; }
+input.url { flex: 3; min-width: 0; }
+input.filename { flex: 1.5; min-width: 0; }
+input.folder { flex: 2; min-width: 0; }
+
+button {
+  background: #1f2330;
+  border: 1px solid #2c3040;
+  border-radius: 8px;
+  color: #e6e8ee;
+  padding: 9px 16px;
+  font-size: 14px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { background: #272c3d; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button.primary { background: #4f7cff; border-color: #4f7cff; font-weight: 600; }
+button.primary:hover:not(:disabled) { background: #3d6bf5; }
+.btn-icon { padding: 9px 10px; flex-shrink: 0; }
+
+.actions { display: flex; gap: 10px; margin-top: 16px; }
+.actions .primary { margin-left: auto; }
+
+.jobs { margin-top: 32px; }
+.jobs-header { display: flex; align-items: center; justify-content: space-between; }
+.jobs-header h2 { font-size: 18px; margin: 0; }
+
+.job {
+  background: #161923;
+  border: 1px solid #2c3040;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 10px;
+}
+.job-error { border-color: #7a2e35; }
+.job-done { border-color: #2e5d40; }
+
+.job-top { display: flex; gap: 10px; align-items: baseline; font-size: 14px; }
+.job-status { flex-shrink: 0; }
+.job-url { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c3c8d4; }
+.job-pct { color: #9aa0b0; font-variant-numeric: tabular-nums; }
+
+.bar {
+  height: 6px;
+  background: #232736;
+  border-radius: 3px;
+  margin: 8px 0 6px;
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  background: #4f7cff;
+  border-radius: 3px;
+  transition: width 0.4s;
+}
+.job-done .bar-fill { background: #3fb96a; }
+.job-error .bar-fill { background: #d9505c; }
+
+.job-msg {
+  font-size: 12px;
+  color: #9aa0b0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-folder { color: #5b6170; }
