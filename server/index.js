@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = 3001
-const MAX_CONCURRENT = 2
+let maxConcurrent = 3
 
 const app = express()
 app.use(express.json())
@@ -19,7 +19,7 @@ app.use((req, res, next) => {
   const origin = req.headers.origin
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin)
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST')
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
   }
   if (req.method === 'OPTIONS') return res.sendStatus(204)
@@ -28,9 +28,13 @@ app.use((req, res, next) => {
 
 // In-memory only — restart the server and everything is gone
 const jobs = new Map()
+const procs = new Map() // tiến trình yt-dlp đang chạy, để riêng vì job được serialize ra JSON
 let nextId = 1
 const queue = []
 let active = 0
+let paused = false
+let updating = false
+let updateResult = null
 
 const defaultFolder = path.join(os.homedir(), 'Downloads')
 
@@ -50,16 +54,37 @@ function sanitizeFilename(name) {
   return name.replace(/[<>:"/\\|?*]+/g, '').trim()
 }
 
+function isYouTubeUrl(url) {
+  try {
+    const u = new URL(url)
+    if (!/^https?:$/.test(u.protocol)) return false
+    const host = u.hostname.replace(/^www\./, '')
+    if (host === 'youtu.be') return u.pathname.length > 1
+    if (['youtube.com', 'm.youtube.com', 'music.youtube.com'].includes(host)) {
+      return (
+        (u.pathname === '/watch' && u.searchParams.has('v')) ||
+        u.pathname.startsWith('/shorts/') ||
+        u.pathname.startsWith('/live/')
+      )
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
 app.get('/api/defaults', (req, res) => {
   res.json({ folder: defaultFolder })
 })
 
 app.post('/api/jobs', (req, res) => {
+  const c = parseInt(req.body.concurrency, 10)
+  if (c >= 1 && c <= 5) maxConcurrent = c
   const items = Array.isArray(req.body.items) ? req.body.items : []
   const created = []
   for (const it of items) {
     const url = (it.url || '').trim()
-    if (!url) continue
+    if (!url || !isYouTubeUrl(url)) continue
     const id = String(nextId++)
     const job = {
       id,
@@ -79,12 +104,130 @@ app.post('/api/jobs', (req, res) => {
 })
 
 app.get('/api/jobs', (req, res) => {
-  res.json({ jobs: [...jobs.values()] })
+  res.json({ jobs: [...jobs.values()], paused, updating })
+})
+
+// Tạm dừng tất cả: dừng yt-dlp nhưng GIỮ file .part — khi tiếp tục, yt-dlp tự nối tiếp
+app.post('/api/pause', (req, res) => {
+  paused = true
+  for (const [id, proc] of procs) {
+    const job = jobs.get(id)
+    if (job) job.pausing = true
+    spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { stdio: 'ignore' })
+  }
+  res.json({ ok: true })
+})
+
+app.post('/api/resume', (req, res) => {
+  paused = false
+  for (const job of jobs.values()) {
+    if (job.status === 'paused') {
+      job.status = 'queued'
+      job.message = 'Chờ tải tiếp...'
+      queue.push(job)
+    }
+  }
+  pump()
+  res.json({ ok: true })
+})
+
+// Thử lại toàn bộ job lỗi (dùng sau khi cập nhật yt-dlp)
+app.post('/api/jobs/retry-errors', (req, res) => {
+  let count = 0
+  for (const job of jobs.values()) {
+    if (job.status === 'error') {
+      job.status = 'queued'
+      job.progress = 0
+      job.message = ''
+      delete job.filepath
+      queue.push(job)
+      count++
+    }
+  }
+  pump()
+  res.json({ ok: true, count })
+})
+
+// Cập nhật yt-dlp lên kênh nightly — dùng khi YouTube đổi cơ chế chặn (lỗi 403)
+app.post('/api/ytdlp/update', (req, res) => {
+  if (updating) return res.json({ ok: true, already: true })
+  updating = true
+  updateResult = null
+  const proc = spawn('yt-dlp', ['--update-to', 'nightly'])
+  let out = ''
+  proc.stdout.on('data', d => { out += d.toString() })
+  proc.stderr.on('data', d => { out += d.toString() })
+  proc.on('close', code => {
+    updating = false
+    const lines = out.trim().split(/\r?\n/).filter(Boolean)
+    updateResult = { ok: code === 0, message: lines[lines.length - 1] || `yt-dlp thoát với mã ${code}` }
+  })
+  proc.on('error', err => {
+    updating = false
+    updateResult = { ok: false, message: 'Không chạy được yt-dlp: ' + err.message }
+  })
+  res.json({ ok: true })
+})
+
+app.get('/api/ytdlp/update', (req, res) => {
+  res.json({ updating, result: updateResult })
 })
 
 app.post('/api/jobs/clear-finished', (req, res) => {
   for (const [id, job] of jobs) {
     if (job.status === 'done' || job.status === 'error') jobs.delete(id)
+  }
+  res.json({ ok: true })
+})
+
+// Hủy job đang chờ hoặc đang tải: dừng yt-dlp và dọn file tạm
+app.delete('/api/jobs/:id', (req, res) => {
+  const job = jobs.get(req.params.id)
+  if (!job) return res.status(404).json({ ok: false })
+  if (job.status === 'done' || job.status === 'error') {
+    return res.status(400).json({ ok: false, message: 'Job đã kết thúc, không hủy được' })
+  }
+  if (job.status === 'queued' || job.status === 'paused') {
+    const i = queue.indexOf(job)
+    if (i >= 0) queue.splice(i, 1)
+    jobs.delete(job.id)
+    cleanupPartialFiles(job) // job paused có thể còn file .part
+    return res.json({ ok: true })
+  }
+  // đang tải: đánh dấu rồi kill cả cây tiến trình (yt-dlp + ffmpeg con)
+  job.canceled = true
+  const proc = procs.get(job.id)
+  if (proc) spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { stdio: 'ignore' })
+  res.json({ ok: true })
+})
+
+// Xóa file tạm của job bị hủy (.part, .ytdl, các mảnh .fXXX và file merge dở)
+function cleanupPartialFiles(job) {
+  const base = job.filename ||
+    (job.filepath ? path.basename(job.filepath).replace(/(\.f\d+)?\.[^.]+$/, '') : null)
+  if (!base) return
+  // chờ chút cho Windows nhả file lock sau khi kill tiến trình
+  setTimeout(() => {
+    let files = []
+    try { files = fs.readdirSync(job.folder) } catch { return }
+    for (const f of files) {
+      if (!f.startsWith(base + '.')) continue
+      const isTemp = /\.(part|ytdl|temp)$/i.test(f) || /\.f\d+\.\w+(\.part)?$/i.test(f) || f === base + '.mp4'
+      if (isTemp) {
+        try { fs.rmSync(path.join(job.folder, f), { force: true }) } catch {}
+      }
+    }
+  }, 700)
+}
+
+// Mở Explorer tại thư mục của job, chọn sẵn file nếu còn tồn tại
+app.post('/api/jobs/:id/open', (req, res) => {
+  const job = jobs.get(req.params.id)
+  if (!job) return res.status(404).json({ ok: false })
+  if (job.filepath && fs.existsSync(job.filepath)) {
+    spawn('explorer', [`/select,${job.filepath}`], { detached: true, stdio: 'ignore' }).unref()
+  } else {
+    spawn('explorer', [job.folder], { detached: true, stdio: 'ignore' }).unref()
   }
   res.json({ ok: true })
 })
@@ -100,7 +243,7 @@ app.get('/api/pick-folder', (req, res) => {
 })
 
 function pump() {
-  while (active < MAX_CONCURRENT && queue.length) {
+  while (!paused && active < maxConcurrent && queue.length) {
     runJob(queue.shift())
   }
 }
@@ -131,6 +274,7 @@ function runJob(job) {
   const proc = spawn('yt-dlp', args, {
     env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
   })
+  procs.set(job.id, proc)
   let lastError = ''
 
   proc.stdout.on('data', chunk => {
@@ -142,7 +286,10 @@ function runJob(job) {
         continue
       }
       const dest = line.match(/\[download\] Destination: (.+)/) || line.match(/\[Merger\] Merging formats into "(.+)"/)
-      if (dest) job.message = 'File: ' + path.basename(dest[1])
+      if (dest) {
+        job.filepath = dest[1].trim()
+        job.message = 'File: ' + path.basename(job.filepath)
+      }
     }
   })
 
@@ -154,6 +301,21 @@ function runJob(job) {
   proc.on('error', err => finish(job, 'error', 'Không chạy được yt-dlp: ' + err.message))
 
   proc.on('close', code => {
+    procs.delete(job.id)
+    if (job.canceled) {
+      cleanupPartialFiles(job)
+      jobs.delete(job.id)
+      active--
+      pump()
+      return
+    }
+    if (job.pausing) {
+      delete job.pausing
+      job.status = 'paused'
+      job.message = 'Đã tạm dừng — sẽ tải tiếp từ chỗ này'
+      active--
+      return
+    }
     if (job.status === 'error') return
     if (code === 0) {
       job.progress = 100
