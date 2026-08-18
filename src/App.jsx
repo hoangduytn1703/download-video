@@ -3,6 +3,9 @@ import { useEffect, useRef, useState } from 'react'
 // Khi chạy bản build (GitHub Pages), gọi thẳng backend chạy trên máy người dùng
 const API = import.meta.env.DEV ? '' : 'http://localhost:3001'
 
+// Tạm ẩn nút "Tạm dừng tất cả" — đổi thành true khi muốn bật lại
+const SHOW_PAUSE_ALL = false
+
 let rowKey = 1
 const newRow = (folder = '') => ({ key: rowKey++, url: '', filename: '', folder })
 
@@ -296,7 +299,7 @@ export default function App() {
           <div className="jobs-header">
             <h2>Tiến trình</h2>
             <div className="jobs-tools">
-              {hasPausable && (
+              {SHOW_PAUSE_ALL && hasPausable && (
                 paused || !hasActive ? (
                   <button className="btn-resume" onClick={resumeAll}>▶ Tiếp tục tất cả</button>
                 ) : (

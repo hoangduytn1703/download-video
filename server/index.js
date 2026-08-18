@@ -21,6 +21,8 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', origin)
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    // Chrome chặn trang HTTPS public gọi vào localhost nếu thiếu header này (Private Network Access)
+    res.setHeader('Access-Control-Allow-Private-Network', 'true')
   }
   if (req.method === 'OPTIONS') return res.sendStatus(204)
   next()
@@ -224,17 +226,43 @@ function cleanupPartialFiles(job) {
 app.post('/api/jobs/:id/open', (req, res) => {
   const job = jobs.get(req.params.id)
   if (!job) return res.status(404).json({ ok: false })
-  if (job.filepath && fs.existsSync(job.filepath)) {
-    spawn('explorer', [`/select,${job.filepath}`], { detached: true, stdio: 'ignore' }).unref()
-  } else {
-    spawn('explorer', [job.folder], { detached: true, stdio: 'ignore' }).unref()
-  }
+  const file = job.filepath && fs.existsSync(job.filepath) ? job.filepath : ''
+  openInExplorer(job.folder, file)
   res.json({ ok: true })
 })
 
+// Mở Explorer rồi đẩy cửa sổ lên trước — tiến trình nền không được Windows cho cướp focus,
+// nên phải dùng SetWindowPos (topmost rồi bỏ topmost) để cửa sổ không chìm sau browser.
+// Đường dẫn truyền qua env var để khỏi lo escape ký tự đặc biệt/tiếng Việt.
+function openInExplorer(folder, file) {
+  const script = `
+$folder = $env:OPEN_FOLDER
+$file = $env:OPEN_FILE
+if ($file) { Start-Process explorer.exe -ArgumentList ('/select,"' + $file + '"') }
+else { Start-Process explorer.exe -ArgumentList ('"' + $folder + '"') }
+Start-Sleep -Milliseconds 1000
+Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hAfter, int x, int y, int cx, int cy, uint uFlags);' -Name Win -Namespace Native
+$shell = New-Object -ComObject Shell.Application
+$wins = @($shell.Windows() | Where-Object { try { $_.Document.Folder.Self.Path -eq $folder } catch { $false } })
+if (-not $wins.Count) { $wins = @($shell.Windows()) }
+if ($wins.Count) {
+  $hwnd = [IntPtr]$wins[$wins.Count - 1].HWND
+  [Native.Win]::SetWindowPos($hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x43) | Out-Null
+  [Native.Win]::SetWindowPos($hwnd, [IntPtr](-2), 0, 0, 0, 0, 0x43) | Out-Null
+}`
+  // -EncodedCommand để không bị hỏng dấu nháy khi truyền script qua command line
+  const encoded = Buffer.from(script, 'utf16le').toString('base64')
+  spawn('powershell', ['-NoProfile', '-STA', '-EncodedCommand', encoded], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, OPEN_FOLDER: folder, OPEN_FILE: file },
+  }).unref()
+}
+
 // Native Windows folder picker (dialog opens on the server machine — fine for a local app)
 app.get('/api/pick-folder', (req, res) => {
-  const script = `Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = 'Chon thu muc tai ve'; $f.ShowNewFolderButton = $true; if ($f.ShowDialog() -eq 'OK') { [Console]::Out.Write($f.SelectedPath) }`
+  // Owner form TopMost để dialog nổi lên trên browser thay vì bị chìm phía sau
+  const script = `Add-Type -AssemblyName System.Windows.Forms; $owner = New-Object System.Windows.Forms.Form; $owner.TopMost = $true; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = 'Chon thu muc tai ve'; $f.ShowNewFolderButton = $true; if ($f.ShowDialog($owner) -eq 'OK') { [Console]::Out.Write($f.SelectedPath) }`
   const ps = spawn('powershell', ['-NoProfile', '-STA', '-Command', script])
   let out = ''
   ps.stdout.on('data', d => { out += d.toString() })
