@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 
+// Khi chạy bản build (GitHub Pages), gọi thẳng backend chạy trên máy người dùng
+const API = import.meta.env.DEV ? '' : 'http://localhost:3001'
+
 let rowKey = 1
 const newRow = (folder = '') => ({ key: rowKey++, url: '', filename: '', folder })
 
@@ -11,7 +14,7 @@ export default function App() {
   const pollRef = useRef(null)
 
   useEffect(() => {
-    fetch('/api/defaults')
+    fetch(`${API}/api/defaults`)
       .then(r => r.json())
       .then(d => {
         setDefaultFolder(d.folder)
@@ -25,7 +28,7 @@ export default function App() {
   useEffect(() => {
     if (hasRunning && !pollRef.current) {
       pollRef.current = setInterval(async () => {
-        const d = await fetch('/api/jobs').then(r => r.json())
+        const d = await fetch(`${API}/api/jobs`).then(r => r.json())
         setJobs(d.jobs)
       }, 1000)
     }
@@ -63,7 +66,7 @@ export default function App() {
   }
 
   const pickFolder = async key => {
-    const d = await fetch('/api/pick-folder').then(r => r.json())
+    const d = await fetch(`${API}/api/pick-folder`).then(r => r.json())
     if (d.folder) updateRow(key, { folder: d.folder })
   }
 
@@ -72,12 +75,12 @@ export default function App() {
     if (!items.length) return
     setSubmitting(true)
     try {
-      await fetch('/api/jobs', {
+      await fetch(`${API}/api/jobs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items }),
       })
-      const d = await fetch('/api/jobs').then(r => r.json())
+      const d = await fetch(`${API}/api/jobs`).then(r => r.json())
       setJobs(d.jobs)
       setRows([newRow(defaultFolder)])
     } finally {
@@ -86,8 +89,8 @@ export default function App() {
   }
 
   const clearFinished = async () => {
-    await fetch('/api/jobs/clear-finished', { method: 'POST' })
-    const d = await fetch('/api/jobs').then(r => r.json())
+    await fetch(`${API}/api/jobs/clear-finished`, { method: 'POST' })
+    const d = await fetch(`${API}/api/jobs`).then(r => r.json())
     setJobs(d.jobs)
   }
 

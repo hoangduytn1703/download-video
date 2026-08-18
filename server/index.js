@@ -12,6 +12,20 @@ const MAX_CONCURRENT = 2
 const app = express()
 app.use(express.json())
 
+// Cho phép trang GitHub Pages (và Vite dev) gọi API trên máy này.
+// Chỉ whitelist origin cụ thể — không mở '*' để web lạ không điều khiển được downloader.
+const ALLOWED_ORIGINS = ['https://hoangduytn1703.github.io', 'http://localhost:5173']
+app.use((req, res, next) => {
+  const origin = req.headers.origin
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204)
+  next()
+})
+
 // In-memory only — restart the server and everything is gone
 const jobs = new Map()
 let nextId = 1
