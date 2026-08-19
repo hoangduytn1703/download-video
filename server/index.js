@@ -35,6 +35,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', origin)
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, Content-Type')
     // Chrome chặn trang HTTPS public gọi vào localhost nếu thiếu header này (Private Network Access)
     res.setHeader('Access-Control-Allow-Private-Network', 'true')
   }
@@ -425,6 +426,70 @@ function finish(job, status, message) {
   active--
   pump()
 }
+
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, ytdlp: YTDLP !== 'yt-dlp' })
+})
+
+// Stream the video to the browser. The browser writes it to the user's folder
+// (File System Access API), so files always land on the visitor's machine.
+app.post('/api/stream', (req, res) => {
+  const url = (req.body?.url || '').trim()
+  if (!url || !isYouTubeUrl(url)) {
+    return res.status(400).json({ ok: false, message: 'Link YouTube không hợp lệ' })
+  }
+  const filename = `${sanitizeFilename(req.body?.filename || 'video') || 'video'}.mp4`
+
+  const args = [
+    '--no-playlist',
+    '--newline',
+    '--extractor-args', `youtubepot-bgutilhttp:base_url=${POT_BASE_URL}`,
+    '-f', 'best[height<=1080][ext=mp4]/best[height<=1080]/best',
+    '--no-part',
+    '-o', '-',
+    url,
+  ]
+  const proc = spawn(YTDLP, args, {
+    env: {
+      ...process.env,
+      PYTHONIOENCODING: 'utf-8',
+      PATH: `${path.join(os.homedir(), '.local', 'bin')}${path.delimiter}${process.env.PATH || ''}`,
+    },
+  })
+
+  let started = false
+  let lastError = ''
+  const begin = () => {
+    if (started || res.headersSent) return
+    started = true
+    res.setHeader('Content-Type', 'video/mp4')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+  }
+
+  proc.stdout.on('data', chunk => {
+    begin()
+    res.write(chunk)
+  })
+  proc.stderr.on('data', chunk => {
+    const text = chunk.toString().trim()
+    if (text.startsWith('ERROR')) lastError = text
+  })
+  proc.on('error', err => {
+    if (!started && !res.headersSent) {
+      sendJsonOnce(res.status(500), { ok: false, message: 'Không chạy được yt-dlp: ' + err.message })
+      return
+    }
+    if (!res.writableEnded) res.end()
+  })
+  proc.on('close', code => {
+    if (!started && !res.headersSent) {
+      sendJsonOnce(res.status(500), { ok: false, message: lastError || `yt-dlp thoát với mã lỗi ${code}` })
+      return
+    }
+    if (!res.writableEnded) res.end()
+  })
+  req.on('close', () => killProcTree(proc))
+})
 
 // Optional: serve the built frontend with `npm run start`
 if (process.argv.includes('--serve-dist')) {

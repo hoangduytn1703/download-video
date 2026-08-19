@@ -1,95 +1,92 @@
 import { useEffect, useRef, useState } from 'react'
+import { canPickFolder, pickDirectory } from './folder.js'
+import { downloadVideo } from './download.js'
+import { isYouTubeUrl } from './youtube.js'
 
-// Khi chạy bản build (GitHub Pages), gọi thẳng backend chạy trên máy người dùng
-const API = import.meta.env.DEV ? '' : 'http://localhost:3001'
-
-// Tạm ẩn nút "Tạm dừng tất cả" — đổi thành true khi muốn bật lại
-const SHOW_PAUSE_ALL = false
+export { isYouTubeUrl }
 
 let rowKey = 1
-const newRow = (folder = '') => ({ key: rowKey++, url: '', filename: '', folder })
+const newRow = () => ({ key: rowKey++, url: '', filename: '' })
 
-// Chỉ nhận link YouTube (video, shorts, live, youtu.be)
-export function isYouTubeUrl(url) {
-  try {
-    const u = new URL(url.trim())
-    if (!/^https?:$/.test(u.protocol)) return false
-    const host = u.hostname.replace(/^www\./, '')
-    if (host === 'youtu.be') return u.pathname.length > 1
-    if (['youtube.com', 'm.youtube.com', 'music.youtube.com'].includes(host)) {
-      return (
-        (u.pathname === '/watch' && u.searchParams.has('v')) ||
-        u.pathname.startsWith('/shorts/') ||
-        u.pathname.startsWith('/live/')
-      )
-    }
-    return false
-  } catch {
-    return false
-  }
-}
+let jobSeq = 1
 
 export default function App() {
-  const [defaultFolder, setDefaultFolder] = useState('')
   const [rows, setRows] = useState([newRow()])
   const [jobs, setJobs] = useState([])
   const [concurrency, setConcurrency] = useState(3)
   const [view, setView] = useState('list')
   const [submitting, setSubmitting] = useState(false)
-  const [paused, setPaused] = useState(false)
-  // null = bình thường | 'running' = đang cập nhật (khóa màn hình) | {ok, message} = kết quả
-  const [upd, setUpd] = useState(null)
-  const pollRef = useRef(null)
+  const [folderLabel, setFolderLabel] = useState('')
+  const [folderError, setFolderError] = useState('')
+  const dirHandleRef = useRef(null)
+  const controllers = useRef(new Map())
+  const activeRef = useRef(0)
+  const queueRef = useRef([])
+  const concurrencyRef = useRef(concurrency)
 
-  const refresh = async () => {
-    const d = await fetch(`${API}/api/jobs`).then(r => r.json())
-    setJobs(d.jobs)
-    setPaused(!!d.paused)
-    return d
+  useEffect(() => {
+    concurrencyRef.current = concurrency
+  }, [concurrency])
+
+  const patchJob = (id, patch) =>
+    setJobs(list => list.map(j => (j.id === id ? { ...j, ...patch } : j)))
+
+  const pump = () => {
+    while (activeRef.current < concurrencyRef.current && queueRef.current.length) {
+      const job = queueRef.current.shift()
+      runJob(job)
+    }
   }
 
-  useEffect(() => {
-    fetch(`${API}/api/defaults`)
-      .then(r => r.json())
-      .then(d => {
-        setDefaultFolder(d.folder)
-        setRows(rs => rs.map(r => (r.folder ? r : { ...r, folder: d.folder })))
+  const runJob = async job => {
+    activeRef.current++
+    const ac = new AbortController()
+    controllers.current.set(job.id, ac)
+    patchJob(job.id, { status: 'downloading', message: 'Đang tải về máy bạn...' })
+    try {
+      const result = await downloadVideo({
+        url: job.url,
+        filename: job.filename,
+        dirHandle: dirHandleRef.current,
+        signal: ac.signal,
+        onProgress: (pct, received) => {
+          if (pct == null) {
+            const mb = (received / 1048576).toFixed(1)
+            patchJob(job.id, { message: `Đã nhận ${mb} MB` })
+            return
+          }
+          patchJob(job.id, { progress: pct, message: `Đang ghi file ${Math.floor(pct)}%` })
+        },
       })
-    return () => clearInterval(pollRef.current)
-  }, [])
-
-  const hasRunning = jobs.some(j => j.status === 'queued' || j.status === 'downloading')
-  const hasActive = jobs.some(j => j.status === 'downloading' || (j.status === 'queued' && !paused))
-  const hasPausable = jobs.some(j => j.status === 'queued' || j.status === 'downloading' || j.status === 'paused')
-  const has403 = jobs.some(j => j.status === 'error' && /403|forbidden/i.test(j.message))
-
-  useEffect(() => {
-    if (hasRunning && !pollRef.current) {
-      pollRef.current = setInterval(refresh, 1000)
+      patchJob(job.id, {
+        status: 'done',
+        progress: 100,
+        message: 'Đã lưu trên máy bạn',
+        filename: result.name,
+        folder: result.folder,
+      })
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        setJobs(list => list.filter(j => j.id !== job.id))
+      } else {
+        patchJob(job.id, {
+          status: 'error',
+          message: err?.message || 'Tải thất bại',
+        })
+      }
+    } finally {
+      controllers.current.delete(job.id)
+      activeRef.current--
+      pump()
     }
-    if (!hasRunning && pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-  }, [hasRunning])
-
-  // Cảnh báo khi reload / đóng tab lúc đang tải dở
-  useEffect(() => {
-    if (!hasRunning) return
-    const warn = e => {
-      e.preventDefault()
-      e.returnValue = 'Video đang tải dở sẽ không được nối lại — phải tải lại từ đầu!'
-    }
-    window.addEventListener('beforeunload', warn)
-    return () => window.removeEventListener('beforeunload', warn)
-  }, [hasRunning])
+  }
 
   const updateRow = (key, patch) =>
     setRows(rs => rs.map(r => (r.key === key ? { ...r, ...patch } : r)))
 
   const removeRow = key => setRows(rs => rs.filter(r => r.key !== key))
 
-  const addRow = () => setRows(rs => [...rs, newRow(defaultFolder)])
+  const addRow = () => setRows(rs => [...rs, newRow()])
 
   const pasteLinks = async () => {
     try {
@@ -103,11 +100,10 @@ export default function App() {
       setRows(rs => {
         const filled = [...rs]
         let i = 0
-        // fill empty rows first, then append
         for (const r of filled) {
           if (!r.url && i < urls.length) r.url = urls[i++]
         }
-        while (i < urls.length) filled.push({ ...newRow(defaultFolder), url: urls[i++] })
+        while (i < urls.length) filled.push({ ...newRow(), url: urls[i++] })
         return [...filled]
       })
     } catch {
@@ -115,126 +111,96 @@ export default function App() {
     }
   }
 
-  const pickFolder = async key => {
-    const d = await fetch(`${API}/api/pick-folder`).then(r => r.json())
-    if (d.folder) updateRow(key, { folder: d.folder })
+  const pickFolder = async () => {
+    setFolderError('')
+    try {
+      const handle = await pickDirectory()
+      dirHandleRef.current = handle
+      setFolderLabel(handle.name)
+    } catch (err) {
+      if (err?.name === 'AbortError') return
+      setFolderError(err?.message || 'Không chọn được thư mục')
+    }
   }
 
   const download = async () => {
     const items = rows.filter(r => isYouTubeUrl(r.url))
     if (!items.length) return
-    setSubmitting(true)
-    try {
-      await fetch(`${API}/api/jobs`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items, concurrency }),
-      })
-      await refresh()
-      // giữ lại các dòng link không hợp lệ để người dùng sửa
-      const leftover = rows.filter(r => r.url.trim() && !isYouTubeUrl(r.url))
-      setRows(leftover.length ? leftover : [newRow(defaultFolder)])
-    } finally {
-      setSubmitting(false)
+    if (!dirHandleRef.current && canPickFolder()) {
+      try {
+        const handle = await pickDirectory()
+        dirHandleRef.current = handle
+        setFolderLabel(handle.name)
+      } catch (err) {
+        if (err?.name === 'AbortError') return
+        setFolderError(err?.message || 'Hãy chọn thư mục lưu trên máy bạn')
+        return
+      }
     }
+    setSubmitting(true)
+    const created = items.map(it => ({
+      id: String(jobSeq++),
+      url: it.url.trim(),
+      filename: it.filename,
+      folder: folderLabel || 'Downloads (trình duyệt)',
+      status: 'queued',
+      progress: 0,
+      message: 'Chờ tải...',
+    }))
+    setJobs(list => [...created, ...list])
+    queueRef.current.push(...created)
+    const leftover = rows.filter(r => r.url.trim() && !isYouTubeUrl(r.url))
+    setRows(leftover.length ? leftover : [newRow()])
+    setSubmitting(false)
+    pump()
   }
 
-  const clearFinished = async () => {
-    await fetch(`${API}/api/jobs/clear-finished`, { method: 'POST' })
-    await refresh()
-  }
-
-  const openFolder = id => fetch(`${API}/api/jobs/${id}/open`, { method: 'POST' })
+  const clearFinished = () =>
+    setJobs(list => list.filter(j => j.status !== 'done' && j.status !== 'error'))
 
   const cancelJob = async j => {
     const name = j.filename || j.url
     const ok = confirm(
-      `Hủy tải "${name}"?\n\nVideo đang tải sẽ dừng ngay và file tạm sẽ bị dọn sạch khỏi máy. Muốn tải lại thì phải bắt đầu từ đầu đó nha!`
+      `Hủy tải "${name}"?\n\nVideo đang tải sẽ dừng ngay. Muốn tải lại thì phải bắt đầu từ đầu đó nha!`,
     )
     if (!ok) return
-    await fetch(`${API}/api/jobs/${j.id}`, { method: 'DELETE' })
-    await refresh()
+    controllers.current.get(j.id)?.abort()
+    queueRef.current = queueRef.current.filter(q => q.id !== j.id)
+    setJobs(list => list.filter(job => job.id !== j.id))
   }
 
-  const pauseAll = async () => {
-    await fetch(`${API}/api/pause`, { method: 'POST' })
-    await refresh()
-  }
+  const hasRunning = jobs.some(j => j.status === 'queued' || j.status === 'downloading')
 
-  const resumeAll = async () => {
-    await fetch(`${API}/api/resume`, { method: 'POST' })
-    await refresh()
-  }
-
-  // Chạy `yt-dlp --update-to nightly`, khóa màn hình trong lúc chạy, xong tự thử lại job lỗi
-  const updateYtdlp = async () => {
-    setUpd('running')
-    await fetch(`${API}/api/ytdlp/update`, { method: 'POST' })
-    const timer = setInterval(async () => {
-      const s = await fetch(`${API}/api/ytdlp/update`).then(r => r.json())
-      if (s.updating) return
-      clearInterval(timer)
-      if (s.result?.ok) {
-        await fetch(`${API}/api/jobs/retry-errors`, { method: 'POST' })
-        await refresh()
-      }
-      setUpd(s.result || { ok: false, message: 'Không rõ kết quả cập nhật' })
-    }, 1500)
-  }
+  useEffect(() => {
+    if (!hasRunning) return
+    const warn = e => {
+      e.preventDefault()
+      e.returnValue = 'Video đang tải dở sẽ không được nối lại — phải tải lại từ đầu!'
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [hasRunning])
 
   return (
     <div className="app">
       <header className="hero">
         <h1><span className="logo">▶</span>Youtube<span className="grad">Download Tool</span></h1>
-        <p className="hint">Dán link → đặt tên → chọn folder → nhấn tải, xong! 🚀</p>
+        <p className="hint">Dán link → đặt tên → chọn folder trên máy bạn → nhấn tải 🚀</p>
       </header>
 
-      {hasRunning && !paused && (
+      {hasRunning && (
         <div className="warning-banner">
           <span className="warning-icon">⚡</span>
           <span>
-            Đang tải dở đó nha! Đừng vội đóng hay F5 trang — video đang chạy sẽ <b>không được nối lại</b>, phải tải lại từ đầu. Ráng chờ xíu, sắp xong rồi ☕
+            Đang tải dở đó nha! Đừng vội đóng hay F5 trang — file đang ghi sẽ <b>không được nối lại</b>.
           </span>
         </div>
       )}
 
-      {has403 && !upd && (
+      {folderError && (
         <div className="error-banner">
-          <span className="warning-icon">🛡️</span>
-          <span>
-            YouTube vừa đổi cơ chế chặn nên một số video bị lỗi <b>403</b>. Đừng lo — bấm nút bên cạnh để cập nhật bộ tải về bản mới nhất, xong app sẽ tự thử lại các video lỗi cho bạn.
-          </span>
-          <button className="btn-reset" onClick={updateYtdlp}>🔄 Reset bộ tải</button>
-        </div>
-      )}
-
-      {upd !== null && (
-        <div className="overlay">
-          <div className="overlay-card">
-            {upd === 'running' ? (
-              <>
-                <div className="spinner" />
-                <h3>Đang cập nhật bộ tải...</h3>
-                <p>Chờ xíu nha, thường chỉ mất 15–30 giây. Đừng tắt trang trong lúc này!</p>
-              </>
-            ) : upd.ok ? (
-              <>
-                <div className="overlay-emoji">🎉</div>
-                <h3>Cập nhật xong!</h3>
-                <p>{upd.message}</p>
-                <p>Các video bị lỗi đã được đưa vào hàng chờ tải lại.</p>
-                <button className="primary" onClick={() => setUpd(null)}>OK, ngon rồi</button>
-              </>
-            ) : (
-              <>
-                <div className="overlay-emoji">😵</div>
-                <h3>Cập nhật thất bại</h3>
-                <p>{upd.message}</p>
-                <p>Thử lại lần nữa, hoặc chạy tay lệnh <code>yt-dlp --update-to nightly</code> trong terminal.</p>
-                <button className="primary" onClick={() => setUpd(null)}>Đóng</button>
-              </>
-            )}
-          </div>
+          <span className="warning-icon">📁</span>
+          <span>{folderError}</span>
         </div>
       )}
 
@@ -261,10 +227,11 @@ export default function App() {
               <input
                 className="folder"
                 placeholder="Thư mục tải về"
-                value={r.folder}
-                onChange={e => updateRow(r.key, { folder: e.target.value })}
+                value={folderLabel}
+                readOnly
+                onClick={pickFolder}
               />
-              <button className="btn-icon" title="Chọn thư mục" onClick={() => pickFolder(r.key)}>📁</button>
+              <button className="btn-icon" title="Chọn thư mục trên máy bạn" onClick={pickFolder}>📁</button>
               <button
                 className="btn-icon"
                 title="Xóa dòng"
@@ -299,13 +266,6 @@ export default function App() {
           <div className="jobs-header">
             <h2>Tiến trình</h2>
             <div className="jobs-tools">
-              {SHOW_PAUSE_ALL && hasPausable && (
-                paused || !hasActive ? (
-                  <button className="btn-resume" onClick={resumeAll}>▶ Tiếp tục tất cả</button>
-                ) : (
-                  <button className="btn-pause" onClick={pauseAll}>⏸ Tạm dừng tất cả</button>
-                )
-              )}
               <div className="view-toggle">
                 <button
                   className={view === 'list' ? 'active' : ''}
@@ -328,15 +288,11 @@ export default function App() {
                 <span className="job-status">
                   {j.status === 'queued' && '⏳ Chờ'}
                   {j.status === 'downloading' && '⚡ Đang tải'}
-                  {j.status === 'paused' && '⏸ Tạm dừng'}
                   {j.status === 'done' && '✅ Xong'}
                   {j.status === 'error' && '❌ Lỗi'}
                 </span>
                 <span className="job-url" title={j.url}>{j.filename || j.url}</span>
-                {j.status === 'done' && (
-                  <button className="btn-icon btn-open" title="Mở thư mục chứa file" onClick={() => openFolder(j.id)}>📂</button>
-                )}
-                {(j.status === 'queued' || j.status === 'downloading' || j.status === 'paused') && (
+                {(j.status === 'queued' || j.status === 'downloading') && (
                   <button className="btn-icon btn-cancel" title="Hủy tải video này" onClick={() => cancelJob(j)}>🗑</button>
                 )}
                 <span className="job-pct">{j.status === 'done' ? '100%' : `${Math.floor(j.progress)}%`}</span>

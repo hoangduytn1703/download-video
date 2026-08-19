@@ -187,7 +187,7 @@ input:focus, select:focus {
 }
 input.url { flex: 3; min-width: 0; }
 input.filename { flex: 1.5; min-width: 0; }
-input.folder { flex: 2; min-width: 0; }
+input.folder { flex: 2; min-width: 0; cursor: pointer; }
 
 button {
   background: rgba(255, 255, 255, 0.07);
