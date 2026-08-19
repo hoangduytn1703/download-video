@@ -52,6 +52,14 @@ Giao diện được deploy tự động lên https://hoangduytn1703.github.io/d
 
 Lưu ý: trang Pages **chỉ là giao diện** — nó gọi backend chạy ở `localhost:3001` trên máy người xem, nên phải `npm run server` trước. Với người dùng thường thì nên dùng bản app desktop ở trên cho tiện.
 
+## ✂️ Cắt clip AI (từ v1.1.0)
+
+Chế độ thứ hai trong app: dán link YouTube, Gemini xem video và đề xuất 3-5 đoạn hay nhất, bạn duyệt/sửa các đoạn rồi bấm Cắt — app tải bản 1080p và cắt thành từng clip (`Ten_P1.mp4`, `Ten_P2.mp4`...) kèm file `Ten_titles.txt` chứa tiêu đề AI đặt cho từng đoạn. Chạy được nhiều link cùng lúc.
+
+Cần **Gemini API key** (lấy miễn phí/trả phí tại aistudio.google.com/apikey) — nhập một lần trong Cài đặt (⚙️), key chỉ lưu trên máy đó (`%USERPROFILE%\.youtube-download-tool\config.json`), không lên git. Prompt phân tích cũng sửa được trong Cài đặt.
+
+Lưu ý kỹ thuật: cắt bằng `-c copy` (không re-encode) nên điểm bắt đầu clip bám theo keyframe gần nhất — có thể sớm hơn mốc yêu cầu vài giây, đổi lại tốc độ cắt gần như tức thì và giữ nguyên chất lượng.
+
 ## Khi download bị lỗi 403
 
 YouTube thay đổi cơ chế chặn thường xuyên. Trong app có sẵn nút **🔄 Reset bộ tải** — bấm là app tự cập nhật yt-dlp lên bản mới nhất rồi thử lại các video lỗi.
@@ -63,11 +71,3 @@ Nếu chạy dạng dev thì chạy tay: `yt-dlp --update-to nightly`.
 ---
 
 © 2026 - code by Nguyễn Hoàng Duy
-
-## ✂️ Cắt clip AI (từ v1.1.0)
-
-Chế độ thứ hai trong app: dán link YouTube, Gemini xem video và đề xuất 3-5 đoạn hay nhất, bạn duyệt/sửa các đoạn rồi bấm Cắt — app tải bản 1080p và cắt thành từng clip (`Ten_P1.mp4`, `Ten_P2.mp4`...) kèm file `Ten_titles.txt` chứa tiêu đề AI đặt cho từng đoạn. Chạy được nhiều link cùng lúc.
-
-Cần **Gemini API key** (lấy miễn phí/trả phí tại aistudio.google.com/apikey) — nhập một lần trong Cài đặt (⚙️), key chỉ lưu trên máy đó (`%USERPROFILE%\.youtube-download-tool\config.json`), không lên git. Prompt phân tích cũng sửa được trong Cài đặt.
-
-Lưu ý kỹ thuật: cắt bằng `-c copy` (không re-encode) nên điểm bắt đầu clip bám theo keyframe gần nhất — có thể sớm hơn mốc yêu cầu vài giây, đổi lại tốc độ cắt gần như tức thì và giữ nguyên chất lượng.
