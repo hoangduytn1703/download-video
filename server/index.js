@@ -4,6 +4,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { fileURLToPath } from 'url'
+import { collectSpawnOutput, sendJsonOnce } from './http-utils.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = 3001
@@ -12,12 +13,25 @@ let maxConcurrent = 3
 const app = express()
 app.use(express.json())
 
+// Keep the local helper alive: one bad request must not kill Vite via concurrently -k
+process.on('uncaughtException', err => {
+  console.error('[server] uncaughtException — keeping process alive:', err)
+})
+process.on('unhandledRejection', err => {
+  console.error('[server] unhandledRejection — keeping process alive:', err)
+})
+
+function isAllowedOrigin(origin) {
+  if (!origin) return false
+  if (origin === 'https://hoangduytn1703.github.io') return true
+  return /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)
+}
+
 // Cho phép trang GitHub Pages (và Vite dev) gọi API trên máy này.
 // Chỉ whitelist origin cụ thể — không mở '*' để web lạ không điều khiển được downloader.
-const ALLOWED_ORIGINS = ['https://hoangduytn1703.github.io', 'http://localhost:5173']
 app.use((req, res, next) => {
   const origin = req.headers.origin
-  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+  if (isAllowedOrigin(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin)
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
@@ -27,6 +41,37 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204)
   next()
 })
+
+function resolveCommand(name) {
+  const dirs = [path.join(os.homedir(), '.local', 'bin'), '/usr/local/bin', '/usr/bin']
+  const names = process.platform === 'win32' ? [`${name}.exe`, name] : [name]
+  for (const dir of dirs) {
+    for (const filename of names) {
+      const candidate = path.join(dir, filename)
+      if (fs.existsSync(candidate)) return candidate
+    }
+  }
+  return name
+}
+
+const YTDLP = resolveCommand('yt-dlp')
+
+function spawnSafe(command, args, options) {
+  const proc = spawn(command, args, options)
+  proc.on('error', err => {
+    console.warn(`[server] spawn ${command} failed:`, err.message)
+  })
+  return proc
+}
+
+function killProcTree(proc) {
+  if (!proc?.pid) return
+  if (process.platform === 'win32') {
+    spawnSafe('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { stdio: 'ignore' })
+    return
+  }
+  try { proc.kill('SIGTERM') } catch {}
+}
 
 // In-memory only — restart the server and everything is gone
 const jobs = new Map()
@@ -115,7 +160,7 @@ app.post('/api/pause', (req, res) => {
   for (const [id, proc] of procs) {
     const job = jobs.get(id)
     if (job) job.pausing = true
-    spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { stdio: 'ignore' })
+    killProcTree(proc)
   }
   res.json({ ok: true })
 })
@@ -155,7 +200,7 @@ app.post('/api/ytdlp/update', (req, res) => {
   if (updating) return res.json({ ok: true, already: true })
   updating = true
   updateResult = null
-  const proc = spawn('yt-dlp', ['--update-to', 'nightly'])
+  const proc = spawnSafe(YTDLP, ['--update-to', 'nightly'])
   let out = ''
   proc.stdout.on('data', d => { out += d.toString() })
   proc.stderr.on('data', d => { out += d.toString() })
@@ -199,7 +244,7 @@ app.delete('/api/jobs/:id', (req, res) => {
   // đang tải: đánh dấu rồi kill cả cây tiến trình (yt-dlp + ffmpeg con)
   job.canceled = true
   const proc = procs.get(job.id)
-  if (proc) spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { stdio: 'ignore' })
+  if (proc) killProcTree(proc)
   res.json({ ok: true })
 })
 
@@ -231,10 +276,22 @@ app.post('/api/jobs/:id/open', (req, res) => {
   res.json({ ok: true })
 })
 
+function openInExplorer(folder, file) {
+  const target = file || folder
+  if (process.platform === 'win32') {
+    openInWindowsExplorer(folder, file)
+    return
+  }
+  spawnSafe(process.platform === 'darwin' ? 'open' : 'xdg-open', [target], {
+    detached: true,
+    stdio: 'ignore',
+  }).unref()
+}
+
 // Mở Explorer rồi đẩy cửa sổ lên trước — tiến trình nền không được Windows cho cướp focus,
 // nên phải dùng SetWindowPos (topmost rồi bỏ topmost) để cửa sổ không chìm sau browser.
 // Đường dẫn truyền qua env var để khỏi lo escape ký tự đặc biệt/tiếng Việt.
-function openInExplorer(folder, file) {
+function openInWindowsExplorer(folder, file) {
   const script = `
 $folder = $env:OPEN_FOLDER
 $file = $env:OPEN_FILE
@@ -250,24 +307,28 @@ if ($wins.Count) {
   [Native.Win]::SetWindowPos($hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x43) | Out-Null
   [Native.Win]::SetWindowPos($hwnd, [IntPtr](-2), 0, 0, 0, 0, 0x43) | Out-Null
 }`
-  // -EncodedCommand để không bị hỏng dấu nháy khi truyền script qua command line
   const encoded = Buffer.from(script, 'utf16le').toString('base64')
-  spawn('powershell', ['-NoProfile', '-STA', '-EncodedCommand', encoded], {
+  spawnSafe('powershell', ['-NoProfile', '-STA', '-EncodedCommand', encoded], {
     detached: true,
     stdio: 'ignore',
     env: { ...process.env, OPEN_FOLDER: folder, OPEN_FILE: file },
   }).unref()
 }
 
-// Native Windows folder picker (dialog opens on the server machine — fine for a local app)
-app.get('/api/pick-folder', (req, res) => {
-  // Owner form TopMost để dialog nổi lên trên browser thay vì bị chìm phía sau
-  const script = `Add-Type -AssemblyName System.Windows.Forms; $owner = New-Object System.Windows.Forms.Form; $owner.TopMost = $true; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = 'Chon thu muc tai ve'; $f.ShowNewFolderButton = $true; if ($f.ShowDialog($owner) -eq 'OK') { [Console]::Out.Write($f.SelectedPath) }`
-  const ps = spawn('powershell', ['-NoProfile', '-STA', '-Command', script])
-  let out = ''
-  ps.stdout.on('data', d => { out += d.toString() })
-  ps.on('close', () => res.json({ folder: out.trim() || null }))
-  ps.on('error', () => res.json({ folder: null }))
+function spawnFolderPicker() {
+  if (process.platform === 'win32') {
+    const script = `Add-Type -AssemblyName System.Windows.Forms; $owner = New-Object System.Windows.Forms.Form; $owner.TopMost = $true; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = 'Chon thu muc tai ve'; $f.ShowNewFolderButton = $true; if ($f.ShowDialog($owner) -eq 'OK') { [Console]::Out.Write($f.SelectedPath) }`
+    return spawnSafe('powershell', ['-NoProfile', '-STA', '-Command', script])
+  }
+  if (process.platform === 'darwin') {
+    return spawnSafe('osascript', ['-e', 'POSIX path of (choose folder)'])
+  }
+  return spawnSafe('zenity', ['--file-selection', '--directory', '--title=Chon thu muc tai ve'])
+}
+
+app.get('/api/pick-folder', async (req, res) => {
+  const folder = await collectSpawnOutput(spawnFolderPicker())
+  sendJsonOnce(res, { folder })
 })
 
 function pump() {
@@ -299,8 +360,12 @@ function runJob(job) {
     job.url,
   ]
 
-  const proc = spawn('yt-dlp', args, {
-    env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+  const proc = spawn(YTDLP, args, {
+    env: {
+      ...process.env,
+      PYTHONIOENCODING: 'utf-8',
+      PATH: `${path.join(os.homedir(), '.local', 'bin')}${path.delimiter}${process.env.PATH || ''}`,
+    },
   })
   procs.set(job.id, proc)
   let lastError = ''
@@ -370,4 +435,9 @@ if (process.argv.includes('--serve-dist')) {
 
 app.listen(PORT, () => {
   console.log(`API server chạy tại http://localhost:${PORT}`)
+  if (YTDLP === 'yt-dlp') {
+    console.warn('Không tìm thấy yt-dlp trong PATH — tải video sẽ lỗi ENOENT')
+  } else {
+    console.log(`yt-dlp: ${YTDLP}`)
+  }
 })
