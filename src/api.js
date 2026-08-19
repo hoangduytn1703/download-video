@@ -13,9 +13,10 @@ export function getApiBase({
 } = {}) {
   const fromEnv = (envUrl || '').trim().replace(/\/$/, '')
   if (fromEnv) return fromEnv
-  if (dev) return ''
-  // GitHub Pages is static — never call the visitor's localhost.
-  if (hostname.endsWith('github.io')) return ''
+  if (dev) return '' // Vite dev proxy /api -> localhost:3001
+  // Trang Pages chỉ là giao diện — backend chạy trên máy người xem (localhost).
+  // Trình duyệt cho phép trang HTTPS gọi localhost (secure context exception).
+  if (hostname.endsWith('github.io')) return 'http://localhost:3001'
   return ''
 }
 
