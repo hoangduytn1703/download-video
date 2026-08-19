@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url'
 import { collectSpawnOutput, sendJsonOnce } from './http-utils.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const PORT = 3001
+const PORT = Number(process.env.PORT) || 3001
 let maxConcurrent = 3
 
 const app = express()
@@ -44,6 +44,9 @@ app.use((req, res, next) => {
 })
 
 function resolveCommand(name) {
+  // App desktop truyền sẵn đường dẫn tới binary đóng gói kèm
+  const fromEnv = process.env[`${name.replace(/-/g, '_').toUpperCase()}_PATH`]
+  if (fromEnv && fs.existsSync(fromEnv)) return fromEnv
   const dirs = [path.join(os.homedir(), '.local', 'bin'), '/usr/local/bin', '/usr/bin']
   const names = process.platform === 'win32' ? [`${name}.exe`, name] : [name]
   for (const dir of dirs) {
@@ -56,6 +59,29 @@ function resolveCommand(name) {
 }
 
 const YTDLP = resolveCommand('yt-dlp')
+const FFMPEG = process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)
+  ? process.env.FFMPEG_PATH
+  : null
+
+// Tham số dùng chung cho mọi lệnh yt-dlp: trỏ ffmpeg đóng gói kèm (nếu có) và
+// dùng POT server khi máy có cài — yt-dlp nightly hiện tự lấy được 1080p nên POT chỉ là dự phòng.
+function commonArgs() {
+  const args = ['--no-playlist']
+  if (FFMPEG) args.push('--ffmpeg-location', FFMPEG)
+  if (fs.existsSync(potServerScript)) {
+    args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${POT_BASE_URL}`)
+  }
+  return args
+}
+
+// Môi trường cho tiến trình yt-dlp: UTF-8 để tên file tiếng Việt không lỗi font
+function ytdlpEnv() {
+  return {
+    ...process.env,
+    PYTHONIOENCODING: 'utf-8',
+    PATH: `${path.join(os.homedir(), '.local', 'bin')}${path.delimiter}${process.env.PATH || ''}`,
+  }
+}
 
 function spawnSafe(command, args, options) {
   const proc = spawn(command, args, options)
@@ -279,6 +305,10 @@ app.post('/api/jobs/:id/open', (req, res) => {
 
 function openInExplorer(folder, file) {
   const target = file || folder
+  if (typeof global.__electronRevealFolder === 'function') {
+    global.__electronRevealFolder(folder, file)
+    return
+  }
   if (process.platform === 'win32') {
     openInWindowsExplorer(folder, file)
     return
@@ -328,6 +358,15 @@ function spawnFolderPicker() {
 }
 
 app.get('/api/pick-folder', async (req, res) => {
+  // Trong app desktop: dùng hộp thoại native của Electron (luôn nổi đúng trên cửa sổ app).
+  // Chạy dạng web: rơi về dialog của hệ điều hành qua PowerShell/osascript/zenity.
+  if (typeof global.__electronFolderPicker === 'function') {
+    try {
+      return sendJsonOnce(res, { folder: await global.__electronFolderPicker() })
+    } catch {
+      return sendJsonOnce(res, { folder: null })
+    }
+  }
   const folder = await collectSpawnOutput(spawnFolderPicker())
   sendJsonOnce(res, { folder })
 })
@@ -353,21 +392,14 @@ function runJob(job) {
   const outTemplate = path.join(job.folder, (job.filename || '%(title)s') + '.%(ext)s')
   const args = [
     '--newline',
-    '--no-playlist',
-    '--extractor-args', `youtubepot-bgutilhttp:base_url=${POT_BASE_URL}`,
+    ...commonArgs(),
     '-f', 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best',
     '--merge-output-format', 'mp4',
     '-o', outTemplate,
     job.url,
   ]
 
-  const proc = spawn(YTDLP, args, {
-    env: {
-      ...process.env,
-      PYTHONIOENCODING: 'utf-8',
-      PATH: `${path.join(os.homedir(), '.local', 'bin')}${path.delimiter}${process.env.PATH || ''}`,
-    },
-  })
+  const proc = spawn(YTDLP, args, { env: ytdlpEnv() })
   procs.set(job.id, proc)
   let lastError = ''
 
@@ -441,21 +473,14 @@ app.post('/api/stream', (req, res) => {
   const filename = `${sanitizeFilename(req.body?.filename || 'video') || 'video'}.mp4`
 
   const args = [
-    '--no-playlist',
     '--newline',
-    '--extractor-args', `youtubepot-bgutilhttp:base_url=${POT_BASE_URL}`,
+    ...commonArgs(),
     '-f', 'best[height<=1080][ext=mp4]/best[height<=1080]/best',
     '--no-part',
     '-o', '-',
     url,
   ]
-  const proc = spawn(YTDLP, args, {
-    env: {
-      ...process.env,
-      PYTHONIOENCODING: 'utf-8',
-      PATH: `${path.join(os.homedir(), '.local', 'bin')}${path.delimiter}${process.env.PATH || ''}`,
-    },
-  })
+  const proc = spawn(YTDLP, args, { env: ytdlpEnv() })
 
   let started = false
   let lastError = ''

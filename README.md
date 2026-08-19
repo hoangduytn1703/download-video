@@ -1,45 +1,65 @@
-# YouTube Downloader
+# Youtube Download Tool
 
-Mini app tải video YouTube: dán nhiều link cùng lúc, đặt tên file và chọn thư mục riêng cho từng link. Chất lượng mặc định 1080p, tải full clip. Không có database — reload/restart là mất danh sách.
+Mini app tải video YouTube: dán nhiều link cùng lúc, đặt tên file và chọn thư mục riêng cho từng link. Chất lượng mặc định 1080p, tải full clip. Không có database — đóng app là danh sách job mất hết.
 
-## Yêu cầu
+## Dành cho người dùng (không cần cài gì)
 
-- Node.js
-- `yt-dlp` và `ffmpeg` trong PATH (cài qua winget: `winget install yt-dlp.yt-dlp yt-dlp.FFmpeg`)
-- **yt-dlp phải ở kênh nightly** (bản stable cũ bị YouTube chặn 403 với format 1080p):
-  ```
-  yt-dlp --update-to nightly
-  ```
-- [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) để sinh PO token (đã cài sẵn trên máy này):
-  - Plugin zip nằm ở `%APPDATA%\yt-dlp\plugins\bgutil-ytdlp-pot-provider.zip`
-  - POT server nằm ở `%USERPROFILE%\bgutil-ytdlp-pot-provider\server` (app tự khởi động nó ở port 4416)
+Tải file cài đặt ở mục [Releases](https://github.com/hoangduytn1703/download-video/releases) rồi chạy:
 
-## Chạy app
+| File | Dùng khi |
+| --- | --- |
+| `Youtube Download Tool Setup x.y.z.exe` | Cài đặt bình thường, có shortcut ngoài desktop |
+| `YoutubeDownloadTool-portable-x.y.z.exe` | Không muốn cài — chép vào USB/ổ chung, double-click là chạy |
+
+Đã đóng gói sẵn `yt-dlp` và `ffmpeg` bên trong, **không cần cài Node.js hay gõ lệnh gì cả**.
+
+> **Windows báo "Windows protected your PC"?** Do file chưa mua chứng chỉ ký số (~$300/năm), không phải virus. Bấm **More info → Run anyway**.
+
+## Dành cho người phát triển
 
 ```
 npm install
-npm run dev
+npm run dev      # giao diện localhost:5173 + backend localhost:3001
+npm test         # chạy unit test
 ```
 
-Mở http://localhost:5173
-
-- Backend Express chạy ở port 3001 (gọi yt-dlp, tối đa 2 download song song)
-- Frontend Vite chạy ở port 5173 (proxy `/api` sang 3001)
-
-## Dùng qua GitHub Pages
-
-Giao diện được deploy tự động lên https://hoangduytn1703.github.io/download-video/ (workflow trong `.github/workflows/deploy.yml`, chạy mỗi lần push lên `master`).
-
-Trang Pages chỉ là giao diện — video vẫn tải bằng máy của bạn, nên **phải chạy backend local trước**:
+Yêu cầu khi chạy dạng dev: `yt-dlp` và `ffmpeg` có trong PATH.
 
 ```
-npm run server
+winget install yt-dlp.yt-dlp yt-dlp.FFmpeg
+yt-dlp --update-to nightly
 ```
 
-rồi mở https://hoangduytn1703.github.io/download-video/. Trang sẽ gọi API tại `http://localhost:3001` trên máy bạn (trình duyệt cho phép trang HTTPS gọi localhost). Không chạy backend thì trang sẽ báo không kết nối được.
+### Đóng gói app desktop
 
-Lưu ý: không thể chạy yt-dlp trên server GitHub/cloud — YouTube chặn IP datacenter, và file cũng sẽ nằm trên server chứ không phải máy bạn.
+Chép binary vào `resources/bin/` (thư mục này không đưa lên git vì file rất nặng):
+
+```
+resources/bin/yt-dlp.exe
+resources/bin/ffmpeg.exe
+```
+
+Rồi chạy:
+
+```
+npm run app         # chạy thử app desktop
+npm run app:build   # xuất file cài đặt vào release/
+```
+
+### Bản web trên GitHub Pages
+
+Giao diện được deploy tự động lên https://hoangduytn1703.github.io/download-video/ mỗi lần push lên `master`.
+
+Lưu ý: trang Pages **chỉ là giao diện** — nó gọi backend chạy ở `localhost:3001` trên máy người xem, nên phải `npm run server` trước. Với người dùng thường thì nên dùng bản app desktop ở trên cho tiện.
 
 ## Khi download bị lỗi 403
 
-YouTube đổi cơ chế chặn thường xuyên. Chạy `yt-dlp --update-to nightly` để cập nhật rồi thử lại.
+YouTube thay đổi cơ chế chặn thường xuyên. Trong app có sẵn nút **🔄 Reset bộ tải** — bấm là app tự cập nhật yt-dlp lên bản mới nhất rồi thử lại các video lỗi.
+
+Nếu chạy dạng dev thì chạy tay: `yt-dlp --update-to nightly`.
+
+> Bản portable giải nén ra thư mục tạm mỗi lần chạy nên bản cập nhật không được giữ lại — dùng bản Setup nếu muốn cập nhật giữ lâu dài.
+
+---
+
+© 2026 - code by Nguyễn Hoàng Duy
