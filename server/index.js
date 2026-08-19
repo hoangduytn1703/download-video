@@ -5,7 +5,7 @@ import fs from 'fs'
 import os from 'os'
 import { fileURLToPath } from 'url'
 import { collectSpawnOutput, sendJsonOnce } from './http-utils.js'
-import { loadConfig, saveConfig, analyzeVideo, normalizeSegments, formatTimestamp, DEFAULT_PROMPT, DEFAULT_MODEL } from './gemini.js'
+import { loadConfig, saveConfig, analyzeVideo, listModels, normalizeSegments, formatTimestamp, DEFAULT_PROMPT, DEFAULT_MODEL } from './gemini.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT) || 3001
@@ -393,6 +393,16 @@ app.post('/api/settings', (req, res) => {
   if (typeof req.body?.model === 'string' && req.body.model.trim()) patch.model = req.body.model.trim()
   const cfg = saveConfig(patch)
   res.json({ ok: true, hasGeminiKey: Boolean(cfg.geminiKey) })
+})
+
+// Danh sách model Gemini khả dụng cho key đang lưu — để dropdown không bao giờ lỗi thời
+app.get('/api/models', async (req, res) => {
+  try {
+    const models = await listModels(loadConfig().geminiKey)
+    res.json({ ok: true, models })
+  } catch (err) {
+    res.status(422).json({ ok: false, message: err?.message || String(err) })
+  }
 })
 
 // Gemini xem video YouTube trực tiếp từ link và đề xuất các đoạn nên cắt

@@ -533,12 +533,28 @@ export default function App() {
   )
 }
 
+// Danh sách dự phòng khi chưa có key / không gọi được Google
+const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-flash-latest', 'gemini-pro-latest']
+
 function SettingsModal({ settings, onClose, onSaved }) {
   const [keyDraft, setKeyDraft] = useState('')
   const [promptDraft, setPromptDraft] = useState(settings?.prompt || '')
-  const [modelDraft, setModelDraft] = useState(settings?.model || 'gemini-2.5-flash')
+  const [modelDraft, setModelDraft] = useState(settings?.model || 'gemini-3.6-flash')
+  const [models, setModels] = useState(FALLBACK_MODELS)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+
+  // Lấy danh sách model thật từ Google (nếu đã có key) — dropdown không bao giờ lỗi thời
+  useEffect(() => {
+    fetch(`${API}/api/models`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok && d.models?.length) {
+          setModels(d.models.includes(modelDraft) ? d.models : [modelDraft, ...d.models])
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   const save = async () => {
     setSaving(true)
@@ -580,9 +596,13 @@ function SettingsModal({ settings, onClose, onSaved }) {
 
         <label className="set-label">Model</label>
         <select className="set-input" value={modelDraft} onChange={e => setModelDraft(e.target.value)}>
-          <option value="gemini-2.5-flash">gemini-2.5-flash — nhanh, rẻ (khuyên dùng)</option>
-          <option value="gemini-2.5-pro">gemini-2.5-pro — phân tích kỹ hơn, chậm và đắt hơn</option>
+          {models.map(m => (
+            <option key={m} value={m}>
+              {m}{m === 'gemini-3.6-flash' ? ' — nhanh, rẻ (khuyên dùng)' : ''}{m.includes('pro') ? ' — kỹ hơn, chậm và đắt hơn' : ''}
+            </option>
+          ))}
         </select>
+        <p className="set-note">Danh sách lấy trực tiếp từ Google theo key của bạn — model nào bị Google cho nghỉ hưu sẽ tự biến mất khỏi đây.</p>
 
         <label className="set-label">Prompt phân tích video</label>
         <textarea

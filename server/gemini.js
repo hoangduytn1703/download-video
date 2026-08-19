@@ -8,7 +8,7 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
 
 export const DEFAULT_PROMPT = `Trích xuất 3-5 đoạn video hấp dẫn nhất từ đầu đến cuối video (số lượng tùy nội dung), bao gồm các sự kiện quan trọng mở đầu. Mỗi đoạn BẮT BUỘC dài từ 3 đến 5 phút, bỏ qua các phần không quan trọng ở giữa các đoạn. Ngôn ngữ của name và title phải theo ngôn ngữ nói trong video. Đặt name là tiêu đề tổng ngắn gọn giật gân cho video, và title là tiêu đề hấp dẫn cho từng đoạn.`
 
-export const DEFAULT_MODEL = 'gemini-2.5-flash'
+export const DEFAULT_MODEL = 'gemini-3.6-flash'
 
 export function loadConfig() {
   try {
@@ -87,8 +87,40 @@ const RESPONSE_SCHEMA = {
   required: ['name', 'segments'],
 }
 
+// Lấy danh sách model khả dụng cho key này (lọc các bản text phù hợp)
+export async function listModels(apiKey) {
+  if (!apiKey) throw new Error('Chưa có Gemini API key')
+  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=100', {
+    headers: { 'x-goog-api-key': apiKey },
+  })
+  if (!res.ok) throw new Error('Không lấy được danh sách model (HTTP ' + res.status + ')')
+  const data = await res.json()
+  return (data.models || [])
+    .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+    .map(m => m.name.replace('models/', ''))
+    .filter(n => /flash|pro/.test(n) && !/embedding|image|tts|audio|live|thinking|banana|lyria|research/.test(n))
+}
+
+// Lỗi tạm thời (quá tải, 429/503) — đáng để tự thử lại
+const isTransient = msg => /high demand|overloaded|try again|429|503|resource.*exhausted/i.test(msg || '')
+
 // Gọi Gemini phân tích video YouTube trực tiếp từ link (không cần tải video trước)
-export async function analyzeVideo(url, { apiKey, prompt, model } = {}) {
+export async function analyzeVideo(url, opts = {}) {
+  // Gemini thỉnh thoảng quá tải thoáng qua — thử lại tối đa 3 lần, giãn 15s/30s
+  let lastErr
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await analyzeVideoOnce(url, opts)
+    } catch (err) {
+      lastErr = err
+      if (attempt === 3 || !isTransient(err?.message)) throw err
+      await new Promise(r => setTimeout(r, attempt * 15000))
+    }
+  }
+  throw lastErr
+}
+
+async function analyzeVideoOnce(url, { apiKey, prompt, model } = {}) {
   if (!apiKey) throw new Error('Chưa có Gemini API key — vào Cài đặt (⚙️) để nhập')
   const usedModel = model || DEFAULT_MODEL
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${usedModel}:generateContent`
