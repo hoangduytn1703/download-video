@@ -5,6 +5,7 @@ import fs from 'fs'
 import os from 'os'
 import { fileURLToPath } from 'url'
 import { collectSpawnOutput, sendJsonOnce } from './http-utils.js'
+import { loadConfig, saveConfig, analyzeVideo, normalizeSegments, formatTimestamp, DEFAULT_PROMPT, DEFAULT_MODEL } from './gemini.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT) || 3001
@@ -62,6 +63,8 @@ const YTDLP = resolveCommand('yt-dlp')
 const FFMPEG = process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)
   ? process.env.FFMPEG_PATH
   : null
+// ffmpeg gọi trực tiếp khi cắt clip (khác với --ffmpeg-location đưa cho yt-dlp)
+const FFMPEG_BIN = FFMPEG || resolveCommand('ffmpeg')
 
 // Tham số dùng chung cho mọi lệnh yt-dlp: trỏ ffmpeg đóng gói kèm (nếu có) và
 // dùng POT server khi máy có cài — yt-dlp nightly hiện tự lấy được 1080p nên POT chỉ là dự phòng.
@@ -371,6 +374,70 @@ app.get('/api/pick-folder', async (req, res) => {
   sendJsonOnce(res, { folder })
 })
 
+
+// ===== Cắt clip theo phân tích AI (Gemini) =====
+
+app.get('/api/settings', (req, res) => {
+  const cfg = loadConfig()
+  res.json({
+    hasGeminiKey: Boolean(cfg.geminiKey),
+    prompt: cfg.prompt || DEFAULT_PROMPT,
+    model: cfg.model || DEFAULT_MODEL,
+  })
+})
+
+app.post('/api/settings', (req, res) => {
+  const patch = {}
+  if (typeof req.body?.geminiKey === 'string' && req.body.geminiKey.trim()) patch.geminiKey = req.body.geminiKey.trim()
+  if (typeof req.body?.prompt === 'string') patch.prompt = req.body.prompt.trim()
+  if (typeof req.body?.model === 'string' && req.body.model.trim()) patch.model = req.body.model.trim()
+  const cfg = saveConfig(patch)
+  res.json({ ok: true, hasGeminiKey: Boolean(cfg.geminiKey) })
+})
+
+// Gemini xem video YouTube trực tiếp từ link và đề xuất các đoạn nên cắt
+app.post('/api/analyze', async (req, res) => {
+  const url = (req.body?.url || '').trim()
+  if (!isYouTubeUrl(url)) return res.status(400).json({ ok: false, message: 'Link YouTube không hợp lệ' })
+  const cfg = loadConfig()
+  try {
+    const result = await analyzeVideo(url, { apiKey: cfg.geminiKey, prompt: cfg.prompt, model: cfg.model })
+    res.json({ ok: true, ...result })
+  } catch (err) {
+    res.status(422).json({ ok: false, message: err?.message || String(err) })
+  }
+})
+
+// Tạo job cắt: tải video gốc rồi cắt thành nhiều clip theo segments
+app.post('/api/cut-jobs', (req, res) => {
+  const c = parseInt(req.body?.concurrency, 10)
+  if (c >= 1 && c <= 5) maxConcurrent = c
+  const items = Array.isArray(req.body?.items) ? req.body.items : []
+  const created = []
+  for (const it of items) {
+    const url = (it.url || '').trim()
+    const segments = normalizeSegments(it.segments)
+    if (!url || !isYouTubeUrl(url) || !segments.length) continue
+    const id = String(nextId++)
+    const job = {
+      id,
+      type: 'cut',
+      url,
+      filename: sanitizeFilename(it.filename || '') || `video-${id}`,
+      folder: (it.folder || '').trim() || defaultFolder,
+      segments,
+      status: 'queued',
+      progress: 0,
+      message: `Chờ tải + cắt ${segments.length} clip...`,
+    }
+    jobs.set(id, job)
+    queue.push(job)
+    created.push(job)
+  }
+  pump()
+  res.json({ jobs: created })
+})
+
 function pump() {
   while (!paused && active < maxConcurrent && queue.length) {
     runJob(queue.shift())
@@ -407,7 +474,8 @@ function runJob(job) {
     for (const line of chunk.toString().split(/\r?\n/)) {
       const pct = line.match(/\[download\]\s+([\d.]+)%/)
       if (pct) {
-        job.progress = parseFloat(pct[1])
+        const raw = parseFloat(pct[1])
+        job.progress = job.type === 'cut' ? Math.round(raw * 0.7) : raw
         job.message = line.trim()
         continue
       }
@@ -444,12 +512,90 @@ function runJob(job) {
     }
     if (job.status === 'error') return
     if (code === 0) {
+      if (job.type === 'cut') {
+        cutSegments(job)
+        return
+      }
       job.progress = 100
       finish(job, 'done', job.message || 'Hoàn tất')
     } else {
       finish(job, 'error', lastError || `yt-dlp thoát với mã lỗi ${code}`)
     }
   })
+}
+
+
+// Cắt video gốc thành các clip theo segments — dùng -c copy nên gần như tức thì
+async function cutSegments(job) {
+  job.status = 'cutting'
+  const input = job.filepath && fs.existsSync(job.filepath) ? job.filepath : null
+  if (!input) return finish(job, 'error', 'Không tìm thấy file video gốc sau khi tải')
+  const base = path.basename(input).replace(/\.[^.]+$/, '')
+  const total = job.segments.length
+  const made = []
+
+  for (let i = 0; i < total; i++) {
+    if (job.canceled) break
+    const seg = job.segments[i]
+    job.message = `Đang cắt clip ${i + 1}/${total}: ${seg.title || ''}`
+    const outPath = path.join(job.folder, `${base}_P${i + 1}.mp4`)
+    const code = await runFfmpegCut(job, input, seg, outPath)
+    if (job.canceled) break
+    if (code !== 0) {
+      try { fs.rmSync(outPath, { force: true }) } catch {}
+      return finish(job, 'error', `Cắt clip ${i + 1}/${total} thất bại (ffmpeg mã ${code}) — video gốc vẫn giữ tại ${input}`)
+    }
+    made.push(outPath)
+    job.progress = 70 + Math.round(((i + 1) / total) * 30)
+  }
+
+  if (job.canceled) {
+    cleanupCutOutputs(job, input, base)
+    jobs.delete(job.id)
+    active--
+    pump()
+    return
+  }
+
+  const titles = job.segments
+    .map((s, i) => `P${i + 1} (${formatTimestamp(s.start)} - ${formatTimestamp(s.end)}): ${s.title}`)
+    .join('\r\n')
+  try { fs.writeFileSync(path.join(job.folder, `${base}_titles.txt`), titles, 'utf8') } catch {}
+  // Xóa video gốc — sản phẩm là các clip; muốn giữ video full thì dùng chế độ Tải video
+  try { fs.rmSync(input, { force: true }) } catch {}
+  job.filepath = made[0]
+  job.progress = 100
+  finish(job, 'done', `Đã cắt ${made.length} clip (${base}_P1…P${made.length}) + file tiêu đề ${base}_titles.txt`)
+}
+
+function runFfmpegCut(job, input, seg, outPath) {
+  return new Promise(resolve => {
+    const args = [
+      '-y',
+      '-ss', formatTimestamp(seg.start),
+      '-to', formatTimestamp(seg.end),
+      '-i', input,
+      '-c', 'copy',
+      '-avoid_negative_ts', 'make_zero',
+      outPath,
+    ]
+    const proc = spawn(FFMPEG_BIN, args, { stdio: 'ignore' })
+    procs.set(job.id, proc)
+    proc.on('error', () => { procs.delete(job.id); resolve(-1) })
+    proc.on('close', code => { procs.delete(job.id); resolve(code) })
+  })
+}
+
+// Dọn khi hủy job cắt giữa chừng: xóa video gốc + các clip đã cắt dở
+function cleanupCutOutputs(job, input, base) {
+  setTimeout(() => {
+    try {
+      for (const f of fs.readdirSync(job.folder)) {
+        const isOutput = (f.startsWith(base + '_P') && f.endsWith('.mp4')) || f === `${base}_titles.txt` || f === path.basename(input)
+        if (isOutput) { try { fs.rmSync(path.join(job.folder, f), { force: true }) } catch {} }
+      }
+    } catch {}
+  }, 700)
 }
 
 function finish(job, status, message) {

@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { getApiBase, runtime } from './api.js'
 import { isYouTubeUrl } from './youtube.js'
 
@@ -13,7 +13,17 @@ const SHOW_PAUSE_ALL = false
 let rowKey = 1
 const newRow = (folder = '') => ({ key: rowKey++, url: '', filename: '', folder })
 
+// giây -> "m:ss" / "h:mm:ss" để hiển thị trong ô sửa
+const secToText = sec => {
+  const s = Math.max(0, Math.round(sec))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const pad = n => String(n).padStart(2, '0')
+  return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`
+}
+
 export default function App() {
+  const [mode, setMode] = useState('download') // 'download' | 'cut'
   const [defaultFolder, setDefaultFolder] = useState('')
   const [rows, setRows] = useState([newRow()])
   const [jobs, setJobs] = useState([])
@@ -23,6 +33,10 @@ export default function App() {
   const [paused, setPaused] = useState(false)
   // null = bình thường | 'running' = đang cập nhật (khóa màn hình) | {ok, message} = kết quả
   const [upd, setUpd] = useState(null)
+  // key dòng -> { status: 'analyzing' | 'ready' | 'error', name, segments, error }
+  const [analysis, setAnalysis] = useState({})
+  const [settings, setSettings] = useState(null) // { hasGeminiKey, prompt, model }
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const pollRef = useRef(null)
 
   const refresh = async () => {
@@ -39,12 +53,16 @@ export default function App() {
         setDefaultFolder(d.folder)
         setRows(rs => rs.map(r => (r.folder ? r : { ...r, folder: d.folder })))
       })
+    fetch(`${API}/api/settings`)
+      .then(r => r.json())
+      .then(setSettings)
+      .catch(() => {})
     return () => clearInterval(pollRef.current)
   }, [])
 
-  const hasRunning = jobs.some(j => j.status === 'queued' || j.status === 'downloading')
-  const hasActive = jobs.some(j => j.status === 'downloading' || (j.status === 'queued' && !paused))
-  const hasPausable = jobs.some(j => j.status === 'queued' || j.status === 'downloading' || j.status === 'paused')
+  const hasRunning = jobs.some(j => ['queued', 'downloading', 'cutting'].includes(j.status))
+  const hasActive = jobs.some(j => j.status === 'downloading' || j.status === 'cutting' || (j.status === 'queued' && !paused))
+  const hasPausable = jobs.some(j => ['queued', 'downloading', 'paused'].includes(j.status))
   const has403 = jobs.some(j => j.status === 'error' && /403|forbidden/i.test(j.message))
 
   useEffect(() => {
@@ -71,7 +89,14 @@ export default function App() {
   const updateRow = (key, patch) =>
     setRows(rs => rs.map(r => (r.key === key ? { ...r, ...patch } : r)))
 
-  const removeRow = key => setRows(rs => rs.filter(r => r.key !== key))
+  const removeRow = key => {
+    setRows(rs => rs.filter(r => r.key !== key))
+    setAnalysis(a => {
+      const next = { ...a }
+      delete next[key]
+      return next
+    })
+  }
 
   const addRow = () => setRows(rs => [...rs, newRow(defaultFolder)])
 
@@ -123,6 +148,101 @@ export default function App() {
     }
   }
 
+  // ===== Chế độ cắt clip AI =====
+
+  const patchAnalysis = (key, patch) =>
+    setAnalysis(a => ({ ...a, [key]: { ...(a[key] || {}), ...patch } }))
+
+  const analyzeAll = async () => {
+    if (settings && !settings.hasGeminiKey) {
+      setSettingsOpen(true)
+      return
+    }
+    const targets = rows.filter(r => isYouTubeUrl(r.url) && analysis[r.key]?.status !== 'analyzing')
+    if (!targets.length) return
+    const pending = [...targets]
+    // tối đa 2 video phân tích song song để không dồn quota Gemini
+    const workers = Array.from({ length: Math.min(2, pending.length) }, async () => {
+      while (pending.length) {
+        const r = pending.shift()
+        patchAnalysis(r.key, { status: 'analyzing', error: '' })
+        try {
+          const res = await fetch(`${API}/api/analyze`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: r.url }),
+          })
+          const d = await res.json().catch(() => ({}))
+          if (!res.ok || !d.ok) throw new Error(d.message || `Phân tích thất bại (HTTP ${res.status})`)
+          patchAnalysis(r.key, {
+            status: 'ready',
+            name: d.name,
+            segments: d.segments.map(s => ({ start: secToText(s.start), end: secToText(s.end), title: s.title })),
+          })
+        } catch (e) {
+          patchAnalysis(r.key, { status: 'error', error: e?.message || 'Phân tích thất bại' })
+          if (/API key/i.test(e?.message || '')) setSettingsOpen(true)
+        }
+      }
+    })
+    await Promise.all(workers)
+  }
+
+  const updateSegment = (key, idx, patch) =>
+    setAnalysis(a => {
+      const entry = a[key]
+      if (!entry) return a
+      const segments = entry.segments.map((s, i) => (i === idx ? { ...s, ...patch } : s))
+      return { ...a, [key]: { ...entry, segments } }
+    })
+
+  const removeSegment = (key, idx) =>
+    setAnalysis(a => {
+      const entry = a[key]
+      if (!entry) return a
+      return { ...a, [key]: { ...entry, segments: entry.segments.filter((_, i) => i !== idx) } }
+    })
+
+  const addSegment = key =>
+    setAnalysis(a => {
+      const entry = a[key]
+      if (!entry) return a
+      return { ...a, [key]: { ...entry, segments: [...entry.segments, { start: '0:00', end: '3:00', title: '' }] } }
+    })
+
+  const readyRows = rows.filter(r => analysis[r.key]?.status === 'ready' && analysis[r.key].segments.length > 0)
+
+  const cutAll = async () => {
+    if (!readyRows.length) return
+    setSubmitting(true)
+    try {
+      const items = readyRows.map(r => ({
+        url: r.url,
+        filename: r.filename || analysis[r.key].name,
+        folder: r.folder,
+        segments: analysis[r.key].segments,
+      }))
+      await fetch(`${API}/api/cut-jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items, concurrency }),
+      })
+      await refresh()
+      const sent = new Set(readyRows.map(r => r.key))
+      setRows(rs => {
+        const left = rs.filter(r => !sent.has(r.key))
+        return left.length ? left : [newRow(defaultFolder)]
+      })
+      setAnalysis(a => {
+        const next = { ...a }
+        for (const k of sent) delete next[k]
+        return next
+      })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   const clearFinished = async () => {
     await fetch(`${API}/api/jobs/clear-finished`, { method: 'POST' })
     await refresh()
@@ -133,7 +253,7 @@ export default function App() {
   const cancelJob = async j => {
     const name = j.filename || j.url
     const ok = confirm(
-      `Hủy tải "${name}"?\n\nVideo đang tải sẽ dừng ngay và file tạm sẽ bị dọn sạch khỏi máy. Muốn tải lại thì phải bắt đầu từ đầu đó nha!`
+      `Hủy "${name}"?\n\nTiến trình sẽ dừng ngay và file tạm sẽ bị dọn sạch khỏi máy. Muốn làm lại thì phải bắt đầu từ đầu đó nha!`
     )
     if (!ok) return
     await fetch(`${API}/api/jobs/${j.id}`, { method: 'DELETE' })
@@ -166,18 +286,30 @@ export default function App() {
     }, 1500)
   }
 
+  const validCount = rows.filter(r => isYouTubeUrl(r.url)).length
+  const analyzingCount = rows.filter(r => analysis[r.key]?.status === 'analyzing').length
+
   return (
     <div className="app">
       <header className="hero">
         <h1><span className="logo">▶</span>Youtube<span className="grad">Download Tool</span></h1>
-        <p className="hint">Dán link → đặt tên → chọn folder → nhấn tải, xong! 🚀</p>
+        <p className="hint">
+          {mode === 'download'
+            ? 'Dán link → đặt tên → chọn folder → nhấn tải, xong! 🚀'
+            : 'Dán link → AI xem video và đề xuất đoạn hay → duyệt/sửa → cắt thành clip nhỏ ✂️'}
+        </p>
+        <div className="mode-tabs">
+          <button className={mode === 'download' ? 'active' : ''} onClick={() => setMode('download')}>⬇ Tải video</button>
+          <button className={mode === 'cut' ? 'active' : ''} onClick={() => setMode('cut')}>✂️ Cắt clip AI</button>
+          <button className="btn-icon gear" title="Cài đặt AI (API key, prompt)" onClick={() => setSettingsOpen(true)}>⚙️</button>
+        </div>
       </header>
 
       {hasRunning && !paused && (
         <div className="warning-banner">
           <span className="warning-icon">⚡</span>
           <span>
-            Đang tải dở đó nha! Đừng vội đóng hay F5 trang — video đang chạy sẽ <b>không được nối lại</b>, phải tải lại từ đầu. Ráng chờ xíu, sắp xong rồi ☕
+            Đang chạy dở đó nha! Đừng vội đóng hay F5 trang — tiến trình đang chạy sẽ <b>không được nối lại</b>, phải làm lại từ đầu. Ráng chờ xíu, sắp xong rồi ☕
           </span>
         </div>
       )}
@@ -222,6 +354,17 @@ export default function App() {
         </div>
       )}
 
+      {settingsOpen && (
+        <SettingsModal
+          settings={settings}
+          onClose={() => setSettingsOpen(false)}
+          onSaved={s => {
+            setSettings(s)
+            setSettingsOpen(false)
+          }}
+        />
+      )}
+
       <div className="card">
         <div className="rows">
           {rows.map((r, i) => {
@@ -238,7 +381,7 @@ export default function App() {
               />
               <input
                 className="filename"
-                placeholder="Tên file (tùy chọn)"
+                placeholder={mode === 'cut' ? 'Tên clip (trống = AI đặt)' : 'Tên file (tùy chọn)'}
                 value={r.filename}
                 onChange={e => updateRow(r.key, { filename: e.target.value })}
               />
@@ -267,16 +410,67 @@ export default function App() {
           <button onClick={addRow}>＋ Thêm link</button>
           <button onClick={pasteLinks}>📋 Dán nhiều link</button>
           <label className="concurrency">
-            Tải cùng lúc
+            Chạy cùng lúc
             <select value={concurrency} onChange={e => setConcurrency(Number(e.target.value))}>
               {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n} video</option>)}
             </select>
           </label>
-          <button className="primary" onClick={download} disabled={submitting || !rows.some(r => isYouTubeUrl(r.url))}>
-            ⬇ Tải xuống ({rows.filter(r => isYouTubeUrl(r.url)).length})
-          </button>
+          {mode === 'download' ? (
+            <button className="primary" onClick={download} disabled={submitting || validCount === 0}>
+              ⬇ Tải xuống ({validCount})
+            </button>
+          ) : (
+            <>
+              <button className="primary" onClick={analyzeAll} disabled={validCount === 0 || analyzingCount > 0}>
+                {analyzingCount > 0 ? `🤖 Đang phân tích ${analyzingCount} video...` : `🤖 Phân tích AI (${validCount})`}
+              </button>
+              <button className="primary cut" onClick={cutAll} disabled={submitting || readyRows.length === 0}>
+                ✂️ Cắt ({readyRows.length})
+              </button>
+            </>
+          )}
         </div>
       </div>
+
+      {mode === 'cut' && rows.some(r => analysis[r.key]) && (
+        <div className="analysis">
+          {rows.filter(r => analysis[r.key]).map(r => {
+            const a = analysis[r.key]
+            return (
+              <div className={`ana ana-${a.status}`} key={r.key}>
+                <div className="ana-head">
+                  <span className="ana-name" title={r.url}>{a.name || r.filename || r.url}</span>
+                  {a.status === 'analyzing' && <span className="ana-status">🤖 Gemini đang xem video, chờ 30–90 giây...</span>}
+                  {a.status === 'error' && <span className="ana-status err">❌ {a.error}</span>}
+                  {a.status === 'ready' && <span className="ana-status ok">✓ {a.segments.length} đoạn — sửa được trước khi cắt</span>}
+                </div>
+                {a.status === 'analyzing' && <div className="bar"><div className="bar-fill ana-pulse" style={{ width: '100%' }} /></div>}
+                {a.status === 'ready' && (
+                  <>
+                    <table className="seg-table">
+                      <thead>
+                        <tr><th></th><th>Bắt đầu</th><th>Kết thúc</th><th>Tiêu đề clip</th><th></th></tr>
+                      </thead>
+                      <tbody>
+                        {a.segments.map((s, i) => (
+                          <tr key={i}>
+                            <td className="seg-num">P{i + 1}</td>
+                            <td><input className="seg-time" value={s.start} onChange={e => updateSegment(r.key, i, { start: e.target.value })} /></td>
+                            <td><input className="seg-time" value={s.end} onChange={e => updateSegment(r.key, i, { end: e.target.value })} /></td>
+                            <td><input className="seg-title" value={s.title} onChange={e => updateSegment(r.key, i, { title: e.target.value })} /></td>
+                            <td><button className="btn-icon" title="Bỏ đoạn này" onClick={() => removeSegment(r.key, i)}>✕</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <button className="seg-add" onClick={() => addSegment(r.key)}>＋ Thêm đoạn</button>
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {jobs.length > 0 && (
         <div className="jobs">
@@ -312,6 +506,7 @@ export default function App() {
                 <span className="job-status">
                   {j.status === 'queued' && '⏳ Chờ'}
                   {j.status === 'downloading' && '⚡ Đang tải'}
+                  {j.status === 'cutting' && '✂️ Đang cắt'}
                   {j.status === 'paused' && '⏸ Tạm dừng'}
                   {j.status === 'done' && '✅ Xong'}
                   {j.status === 'error' && '❌ Lỗi'}
@@ -320,8 +515,8 @@ export default function App() {
                 {j.status === 'done' && (
                   <button className="btn-icon btn-open" title="Mở thư mục chứa file" onClick={() => openFolder(j.id)}>📂</button>
                 )}
-                {(j.status === 'queued' || j.status === 'downloading' || j.status === 'paused') && (
-                  <button className="btn-icon btn-cancel" title="Hủy tải video này" onClick={() => cancelJob(j)}>🗑</button>
+                {['queued', 'downloading', 'cutting', 'paused'].includes(j.status) && (
+                  <button className="btn-icon btn-cancel" title="Hủy job này" onClick={() => cancelJob(j)}>🗑</button>
                 )}
                 <span className="job-pct">{j.status === 'done' ? '100%' : `${Math.floor(j.progress)}%`}</span>
               </div>
@@ -334,6 +529,79 @@ export default function App() {
       )}
 
       <footer className="footer">© 2026 - code by Nguyễn Hoàng Duy</footer>
+    </div>
+  )
+}
+
+function SettingsModal({ settings, onClose, onSaved }) {
+  const [keyDraft, setKeyDraft] = useState('')
+  const [promptDraft, setPromptDraft] = useState(settings?.prompt || '')
+  const [modelDraft, setModelDraft] = useState(settings?.model || 'gemini-2.5-flash')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const save = async () => {
+    setSaving(true)
+    setError('')
+    try {
+      const res = await fetch(`${API}/api/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          geminiKey: keyDraft.trim() || undefined,
+          prompt: promptDraft,
+          model: modelDraft,
+        }),
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d?.message || `HTTP ${res.status}`)
+      onSaved({ hasGeminiKey: d.hasGeminiKey, prompt: promptDraft, model: modelDraft })
+    } catch (e) {
+      setError('Không lưu được: ' + (e?.message || e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="overlay-card settings">
+        <h3>⚙️ Cài đặt AI</h3>
+
+        <label className="set-label">Gemini API key</label>
+        <input
+          type="password"
+          className="set-input"
+          placeholder={settings?.hasGeminiKey ? 'Đã lưu key ✓ — nhập key mới nếu muốn thay' : 'Dán API key (lấy tại aistudio.google.com/apikey)'}
+          value={keyDraft}
+          onChange={e => setKeyDraft(e.target.value)}
+        />
+        <p className="set-note">Key chỉ lưu trên máy này, không đưa lên mạng hay lên git.</p>
+
+        <label className="set-label">Model</label>
+        <select className="set-input" value={modelDraft} onChange={e => setModelDraft(e.target.value)}>
+          <option value="gemini-2.5-flash">gemini-2.5-flash — nhanh, rẻ (khuyên dùng)</option>
+          <option value="gemini-2.5-pro">gemini-2.5-pro — phân tích kỹ hơn, chậm và đắt hơn</option>
+        </select>
+
+        <label className="set-label">Prompt phân tích video</label>
+        <textarea
+          className="set-input set-prompt"
+          rows={7}
+          value={promptDraft}
+          onChange={e => setPromptDraft(e.target.value)}
+        />
+        <p className="set-note">Mô tả cách AI chọn đoạn (số đoạn, độ dài, tiêu chí). Kết quả luôn được ép về đúng định dạng nên không cần dặn về format.</p>
+
+        {error && <p className="set-error">{error}</p>}
+
+        <div className="settings-actions">
+          <button onClick={onClose}>Đóng</button>
+          <button className="primary" onClick={save} disabled={saving}>
+            {saving ? 'Đang lưu...' : 'Lưu cài đặt'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
