@@ -540,3 +540,9 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-
 .settings-actions button:not(.primary) {
   border-color: rgba(255, 255, 255, 0.13);
 }
+
+/* Fix nút Đóng cao hơn nút Lưu: .overlay-card .primary có margin-top 18px
+   (specificity cao hơn) đẩy nút Lưu xuống, còn flex mặc định stretch kéo
+   nút Đóng giãn theo chiều cao hàng -> lệch đúng 18px */
+.settings-actions { align-items: center; }
+.overlay-card .settings-actions button { margin-top: 0; }

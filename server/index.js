@@ -110,7 +110,13 @@ const jobs = new Map()
 const procs = new Map() // tiến trình yt-dlp đang chạy, để riêng vì job được serialize ra JSON
 let nextId = 1
 const queue = []
-let active = 0
+// Đếm job đang chạy THEO LOẠI: job cắt luôn chạy song song hết cỡ (trần 10),
+// job tải thường theo selectbox — hai bên không giành slot của nhau.
+const activeByType = { download: 0, cut: 0 }
+const typeOf = job => (job.type === 'cut' ? 'cut' : 'download')
+const capOf = job => (job.type === 'cut' ? MAX_CONCURRENT_LIMIT : maxConcurrent)
+const takeSlot = job => { activeByType[typeOf(job)]++ }
+const freeSlot = job => { activeByType[typeOf(job)] = Math.max(0, activeByType[typeOf(job)] - 1) }
 let paused = false
 let updating = false
 let updateResult = null
@@ -479,13 +485,20 @@ app.post('/api/cut-jobs', (req, res) => {
 })
 
 function pump() {
-  while (!paused && active < maxConcurrent && queue.length) {
-    runJob(queue.shift())
+  if (paused) return
+  for (let i = 0; i < queue.length; ) {
+    const job = queue[i]
+    if (activeByType[typeOf(job)] < capOf(job)) {
+      queue.splice(i, 1)
+      runJob(job)
+    } else {
+      i++
+    }
   }
 }
 
 function runJob(job) {
-  active++
+  takeSlot(job)
   job.status = 'downloading'
   job.message = 'Đang bắt đầu...'
 
@@ -557,7 +570,7 @@ function runJob(job) {
     if (job.canceled) {
       cleanupPartialFiles(job)
       jobs.delete(job.id)
-      active--
+      freeSlot(job)
       pump()
       return
     }
@@ -565,7 +578,7 @@ function runJob(job) {
       delete job.pausing
       job.status = 'paused'
       job.message = 'Đã tạm dừng — sẽ tải tiếp từ chỗ này'
-      active--
+      freeSlot(job)
       return
     }
     if (job.status === 'error') return
@@ -637,7 +650,7 @@ async function cutSegments(job) {
   if (job.canceled) {
     cleanupCutOutputs(job, input, base)
     jobs.delete(job.id)
-    active--
+    freeSlot(job)
     pump()
     return
   }
@@ -691,7 +704,7 @@ function cleanupCutOutputs(job, input, base) {
 function finish(job, status, message) {
   job.status = status
   job.message = message
-  active--
+  freeSlot(job)
   pump()
 }
 
