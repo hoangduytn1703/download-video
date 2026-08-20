@@ -383,7 +383,8 @@ app.get('/api/settings', (req, res) => {
   const cfg = loadConfig()
   res.json({
     hasGeminiKey: Boolean(cfg.geminiKey),
-    prompt: cfg.prompt || DEFAULT_PROMPT,
+    prompt: cfg.prompt || '',
+    appendFormatRules: cfg.appendFormatRules !== false, // mặc định bật
     model: cfg.model || DEFAULT_MODEL,
   })
 })
@@ -393,8 +394,35 @@ app.post('/api/settings', (req, res) => {
   if (typeof req.body?.geminiKey === 'string' && req.body.geminiKey.trim()) patch.geminiKey = req.body.geminiKey.trim()
   if (typeof req.body?.prompt === 'string') patch.prompt = req.body.prompt.trim()
   if (typeof req.body?.model === 'string' && req.body.model.trim()) patch.model = req.body.model.trim()
+  if (typeof req.body?.appendFormatRules === 'boolean') patch.appendFormatRules = req.body.appendFormatRules
   const cfg = saveConfig(patch)
-  res.json({ ok: true, hasGeminiKey: Boolean(cfg.geminiKey) })
+  res.json({
+    ok: true,
+    hasGeminiKey: Boolean(cfg.geminiKey),
+    prompt: cfg.prompt || '',
+    appendFormatRules: cfg.appendFormatRules !== false,
+    model: cfg.model || DEFAULT_MODEL,
+  })
+})
+
+// ===== Tự cập nhật app (chỉ có khi chạy trong app desktop bản cài đặt) =====
+const noUpdater = { supported: false, state: 'idle', currentVersion: '', autoCheck: false }
+
+app.get('/api/app-update', (req, res) => {
+  const u = global.__electronAppUpdate
+  res.json(u ? u.getState() : noUpdater)
+})
+
+app.post('/api/app-update/:action', (req, res) => {
+  const u = global.__electronAppUpdate
+  if (!u) return res.status(400).json({ ok: false, message: 'Chỉ dùng được trong app desktop' })
+  const { action } = req.params
+  if (action === 'check') u.check()
+  else if (action === 'download') u.download()
+  else if (action === 'install') u.install()
+  else if (action === 'auto') u.setAutoCheck(req.body?.enabled)
+  else return res.status(404).json({ ok: false, message: 'Hành động không hợp lệ' })
+  res.json({ ok: true, ...u.getState() })
 })
 
 // Danh sách model Gemini khả dụng cho key đang lưu — để dropdown không bao giờ lỗi thời

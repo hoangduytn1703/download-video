@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { getApiBase, runtime } from './api.js'
 import { isYouTubeUrl } from './youtube.js'
-import { parseSegmentsText, BROWSER_AI_PROMPT } from './parse.js'
+import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT } from './parse.js'
 
 export { isYouTubeUrl }
 
@@ -229,11 +229,11 @@ export default function App() {
   const [promptCopied, setPromptCopied] = useState(false)
   const copyPrompt = async () => {
     try {
-      await navigator.clipboard.writeText(BROWSER_AI_PROMPT)
+      await navigator.clipboard.writeText(buildPrompt(settings?.prompt, settings?.appendFormatRules !== false))
       setPromptCopied(true)
       setTimeout(() => setPromptCopied(false), 2500)
     } catch {
-      alert(BROWSER_AI_PROMPT)
+      alert(buildPrompt(settings?.prompt, settings?.appendFormatRules !== false))
     }
   }
 
@@ -356,8 +356,8 @@ export default function App() {
         <div className="mode-tabs">
           <button className={mode === 'download' ? 'active' : ''} onClick={() => setMode('download')}>⬇ Tải video</button>
           <button className={mode === 'cut' ? 'active' : ''} onClick={() => setMode('cut')}>✂️ Cắt clip</button>
-          {SHOW_AI_ANALYZE && (
-            <button className="btn-icon gear" title="Cài đặt AI (API key, prompt)" onClick={() => setSettingsOpen(true)}>⚙️</button>
+          {(mode === 'cut' || SHOW_AI_ANALYZE) && (
+            <button className="btn-icon gear" title="Sửa prompt hỏi AI" onClick={() => setSettingsOpen(true)}>⚙️</button>
           )}
         </div>
       </header>
@@ -617,7 +617,88 @@ export default function App() {
         </div>
       )}
 
+      <UpdateBar />
+
       <footer className="footer">© 2026 - code by Nguyễn Hoàng Duy</footer>
+    </div>
+  )
+}
+
+// Thanh cập nhật app — chỉ hiện khi chạy trong app desktop bản cài đặt
+function UpdateBar() {
+  const [u, setU] = useState(null)
+  const timerRef = useRef(null)
+
+  const load = async () => {
+    const d = await fetch(`${API}/api/app-update`).then(r => r.json()).catch(() => null)
+    if (d) setU(d)
+    return d
+  }
+
+  useEffect(() => {
+    load()
+    return () => clearInterval(timerRef.current)
+  }, [])
+
+  // đang kiểm tra / tải thì hỏi liên tục cho thanh tiến trình chạy
+  useEffect(() => {
+    const busy = u && ['checking', 'downloading'].includes(u.state)
+    if (busy && !timerRef.current) timerRef.current = setInterval(load, 1000)
+    if (!busy && timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+  }, [u?.state])
+
+  const act = async action => {
+    const d = await fetch(`${API}/api/app-update/${action}`, { method: 'POST' })
+      .then(r => r.json())
+      .catch(() => null)
+    if (d) setU(d)
+  }
+
+  const toggleAuto = async enabled => {
+    const d = await fetch(`${API}/api/app-update/auto`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }).then(r => r.json()).catch(() => null)
+    if (d) setU(d)
+  }
+
+  if (!u?.supported) return null
+
+  return (
+    <div className={`upd-bar${u.state === 'available' || u.state === 'downloaded' ? ' hot' : ''}`}>
+      <span className="upd-ver">Phiên bản {u.currentVersion}</span>
+
+      {u.state === 'checking' && <span className="upd-msg">Đang kiểm tra bản mới...</span>}
+      {u.state === 'not-available' && <span className="upd-msg">Đang dùng bản mới nhất ✓</span>}
+      {u.state === 'available' && (
+        <>
+          <span className="upd-msg">🎉 Có bản mới {u.newVersion}!</span>
+          <button className="upd-btn" onClick={() => act('download')}>⬇ Tải bản mới</button>
+        </>
+      )}
+      {u.state === 'downloading' && (
+        <span className="upd-msg">Đang tải bản mới... {u.percent}%</span>
+      )}
+      {u.state === 'downloaded' && (
+        <>
+          <span className="upd-msg">✓ Đã tải xong bản {u.newVersion}</span>
+          <button className="upd-btn" onClick={() => act('install')}>🔄 Khởi động lại để cài</button>
+        </>
+      )}
+      {u.state === 'error' && <span className="upd-msg err">Không kiểm tra được: {u.error}</span>}
+
+      {!['checking', 'downloading', 'downloaded'].includes(u.state) && (
+        <button className="upd-check" onClick={() => act('check')}>Kiểm tra cập nhật</button>
+      )}
+
+      <label className="upd-auto">
+        <input type="checkbox" checked={u.autoCheck} onChange={e => toggleAuto(e.target.checked)} />
+        Tự kiểm tra khi mở app
+      </label>
     </div>
   )
 }
@@ -627,14 +708,17 @@ const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-flash-l
 
 function SettingsModal({ settings, onClose, onSaved }) {
   const [keyDraft, setKeyDraft] = useState('')
-  const [promptDraft, setPromptDraft] = useState(settings?.prompt || '')
+  const [promptDraft, setPromptDraft] = useState(settings?.prompt || DEFAULT_CUT_PROMPT)
+  const [appendRules, setAppendRules] = useState(settings?.appendFormatRules !== false)
   const [modelDraft, setModelDraft] = useState(settings?.model || 'gemini-3.6-flash')
   const [models, setModels] = useState(FALLBACK_MODELS)
+  const [sample, setSample] = useState('')
+  const [showFull, setShowFull] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  // Lấy danh sách model thật từ Google (nếu đã có key) — dropdown không bao giờ lỗi thời
   useEffect(() => {
+    if (!SHOW_AI_ANALYZE) return
     fetch(`${API}/api/models`)
       .then(r => r.json())
       .then(d => {
@@ -644,6 +728,11 @@ function SettingsModal({ settings, onClose, onSaved }) {
       })
       .catch(() => {})
   }, [])
+
+  const finalPrompt = buildPrompt(promptDraft, appendRules)
+  // Chỉ cần soi prompt khi người dùng tự lo phần định dạng
+  const check = appendRules ? { ok: true } : validatePrompt(promptDraft)
+  const sampleResult = sample.trim() ? parseSegmentsText(sample) : null
 
   const save = async () => {
     setSaving(true)
@@ -655,12 +744,13 @@ function SettingsModal({ settings, onClose, onSaved }) {
         body: JSON.stringify({
           geminiKey: keyDraft.trim() || undefined,
           prompt: promptDraft,
+          appendFormatRules: appendRules,
           model: modelDraft,
         }),
       })
       const d = await res.json()
       if (!res.ok) throw new Error(d?.message || `HTTP ${res.status}`)
-      onSaved({ hasGeminiKey: d.hasGeminiKey, prompt: promptDraft, model: modelDraft })
+      onSaved(d)
     } catch (e) {
       setError('Không lưu được: ' + (e?.message || e))
     } finally {
@@ -671,43 +761,88 @@ function SettingsModal({ settings, onClose, onSaved }) {
   return (
     <div className="overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="overlay-card settings">
-        <h3>⚙️ Cài đặt AI</h3>
+        <h3>⚙️ Prompt hỏi AI</h3>
+        <p className="set-note">
+          Đây là prompt mà nút <b>📋 Copy prompt cho AI</b> sẽ chép. Viết yêu cầu theo ý bạn — cách chọn đoạn, số đoạn, độ dài, giọng văn tiêu đề.
+        </p>
 
-        <label className="set-label">Gemini API key</label>
-        <input
-          type="password"
-          className="set-input"
-          placeholder={settings?.hasGeminiKey ? 'Đã lưu key ✓ — nhập key mới nếu muốn thay' : 'Dán API key (lấy tại aistudio.google.com/apikey)'}
-          value={keyDraft}
-          onChange={e => setKeyDraft(e.target.value)}
-        />
-        <p className="set-note">Key chỉ lưu trên máy này, không đưa lên mạng hay lên git.</p>
-
-        <label className="set-label">Model</label>
-        <select className="set-input" value={modelDraft} onChange={e => setModelDraft(e.target.value)}>
-          {models.map(m => (
-            <option key={m} value={m}>
-              {m}{m === 'gemini-3.6-flash' ? ' — nhanh, rẻ (khuyên dùng)' : ''}{m.includes('pro') ? ' — kỹ hơn, chậm và đắt hơn' : ''}
-            </option>
-          ))}
-        </select>
-        <p className="set-note">Danh sách lấy trực tiếp từ Google theo key của bạn — model nào bị Google cho nghỉ hưu sẽ tự biến mất khỏi đây.</p>
-
-        <label className="set-label">Prompt phân tích video</label>
+        <label className="set-label">Yêu cầu của bạn</label>
         <textarea
           className="set-input set-prompt"
           rows={7}
           value={promptDraft}
           onChange={e => setPromptDraft(e.target.value)}
+          placeholder={DEFAULT_CUT_PROMPT}
         />
-        <p className="set-note">Mô tả cách AI chọn đoạn (số đoạn, độ dài, tiêu chí). Kết quả luôn được ép về đúng định dạng nên không cần dặn về format.</p>
+        <button className="set-reset" onClick={() => setPromptDraft(DEFAULT_CUT_PROMPT)}>↺ Về prompt mặc định</button>
+
+        <label className="set-check">
+          <input type="checkbox" checked={appendRules} onChange={e => setAppendRules(e.target.checked)} />
+          <span>
+            Tự thêm quy tắc định dạng vào cuối prompt <b>(nên bật)</b>
+          </span>
+        </label>
+        <p className="set-note">
+          Bật thì app tự nối phần dặn AI trả về mốc thời gian đúng chuẩn — nhờ vậy bạn viết prompt kiểu gì cũng cắt được.
+          Tắt thì bạn phải tự dặn AI trong prompt.
+        </p>
+
+        {!check.ok && <p className="set-error">⚠ {check.reason}</p>}
+        {check.ok && check.warn && <p className="set-warn">💡 {check.warn}</p>}
+        {appendRules && <p className="set-ok">✓ Kết quả AI sẽ luôn ở dạng app đọc được</p>}
+
+        <button className="set-reset" onClick={() => setShowFull(v => !v)}>
+          {showFull ? '▲ Ẩn prompt đầy đủ' : '▼ Xem prompt đầy đủ sẽ được copy'}
+        </button>
+        {showFull && <pre className="set-preview">{finalPrompt}</pre>}
+
+        <label className="set-label">Thử nghiệm — dán một kết quả AI vào đây để xem app có đọc được không</label>
+        <textarea
+          className="set-input set-prompt"
+          rows={3}
+          value={sample}
+          onChange={e => setSample(e.target.value)}
+          placeholder="Dán thử kết quả AI trả về..."
+        />
+        {sampleResult && (
+          sampleResult.segments.length ? (
+            <div className="set-ok">
+              ✓ Đọc được <b>{sampleResult.segments.length} đoạn</b>
+              {sampleResult.name ? ` — tên: "${sampleResult.name}"` : ''}
+              <ul className="set-seglist">
+                {sampleResult.segments.map((s, i) => (
+                  <li key={i}>P{i + 1}: {s.start} → {s.end} {s.title ? `— ${s.title}` : ''}</li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="set-error">✗ Không đọc được đoạn nào từ text này</p>
+          )
+        )}
+
+        {SHOW_AI_ANALYZE && (
+          <>
+            <label className="set-label">Gemini API key</label>
+            <input
+              type="password"
+              className="set-input"
+              placeholder={settings?.hasGeminiKey ? 'Đã lưu key ✓ — nhập key mới nếu muốn thay' : 'Dán API key (lấy tại aistudio.google.com/apikey)'}
+              value={keyDraft}
+              onChange={e => setKeyDraft(e.target.value)}
+            />
+            <label className="set-label">Model</label>
+            <select className="set-input" value={modelDraft} onChange={e => setModelDraft(e.target.value)}>
+              {models.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </>
+        )}
 
         {error && <p className="set-error">{error}</p>}
 
         <div className="settings-actions">
           <button onClick={onClose}>Đóng</button>
           <button className="primary" onClick={save} disabled={saving}>
-            {saving ? 'Đang lưu...' : 'Lưu cài đặt'}
+            {saving ? 'Đang lưu...' : 'Lưu prompt'}
           </button>
         </div>
       </div>

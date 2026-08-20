@@ -2,7 +2,9 @@ const { app, BrowserWindow, dialog, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const net = require('net')
+const os = require('os')
 const { pathToFileURL } = require('url')
+const { autoUpdater } = require('electron-updater')
 
 // Chỉ cho phép một cửa sổ app chạy tại một thời điểm
 if (!app.requestSingleInstanceLock()) {
@@ -64,8 +66,111 @@ async function startBackend() {
     else shell.openPath(folder)
   }
 
+  setupAutoUpdate()
+
   await import(pathToFileURL(path.join(projectRoot, 'server', 'index.js')).href)
   return port
+}
+
+// ===== Tự cập nhật app từ GitHub Releases =====
+// Chỉ chạy được ở bản cài đặt (Setup). Bản portable giải nén ra thư mục tạm
+// mỗi lần chạy nên không thể tự ghi đè chính nó.
+const configFile = path.join(os.homedir(), '.youtube-download-tool', 'config.json')
+
+function readAutoCheck() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+    return cfg.autoCheckUpdate !== false // mặc định bật
+  } catch {
+    return true
+  }
+}
+
+function writeAutoCheck(enabled) {
+  let cfg = {}
+  try { cfg = JSON.parse(fs.readFileSync(configFile, 'utf8')) } catch {}
+  cfg.autoCheckUpdate = Boolean(enabled)
+  try {
+    fs.mkdirSync(path.dirname(configFile), { recursive: true })
+    fs.writeFileSync(configFile, JSON.stringify(cfg, null, 2), 'utf8')
+  } catch {}
+}
+
+// state: idle | checking | available | not-available | downloading | downloaded | error
+const updateState = {
+  supported: false,
+  currentVersion: app.getVersion(),
+  state: 'idle',
+  newVersion: '',
+  notes: '',
+  percent: 0,
+  error: '',
+  autoCheck: readAutoCheck(),
+}
+
+function setupAutoUpdate() {
+  // Bản portable đặt biến này; bản chạy dev thì chưa đóng gói
+  const isPortable = Boolean(process.env.PORTABLE_EXECUTABLE_DIR)
+  updateState.supported = app.isPackaged && !isPortable
+
+  global.__electronAppUpdate = {
+    getState: () => ({ ...updateState }),
+    check: () => {
+      if (!updateState.supported) return
+      updateState.state = 'checking'
+      updateState.error = ''
+      autoUpdater.checkForUpdates().catch(err => {
+        updateState.state = 'error'
+        updateState.error = err?.message || String(err)
+      })
+    },
+    download: () => {
+      if (!updateState.supported || updateState.state !== 'available') return
+      updateState.state = 'downloading'
+      updateState.percent = 0
+      autoUpdater.downloadUpdate().catch(err => {
+        updateState.state = 'error'
+        updateState.error = err?.message || String(err)
+      })
+    },
+    install: () => {
+      if (updateState.state !== 'downloaded') return
+      setImmediate(() => autoUpdater.quitAndInstall(false, true))
+    },
+    setAutoCheck: enabled => {
+      updateState.autoCheck = Boolean(enabled)
+      writeAutoCheck(enabled)
+    },
+  }
+
+  if (!updateState.supported) return
+
+  autoUpdater.autoDownload = false // người dùng bấm nút mới tải
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('update-available', info => {
+    updateState.state = 'available'
+    updateState.newVersion = info?.version || ''
+    updateState.notes = typeof info?.releaseNotes === 'string' ? info.releaseNotes.slice(0, 800) : ''
+  })
+  autoUpdater.on('update-not-available', () => { updateState.state = 'not-available' })
+  autoUpdater.on('download-progress', p => {
+    updateState.state = 'downloading'
+    updateState.percent = Math.round(p?.percent || 0)
+  })
+  autoUpdater.on('update-downloaded', () => {
+    updateState.state = 'downloaded'
+    updateState.percent = 100
+  })
+  autoUpdater.on('error', err => {
+    updateState.state = 'error'
+    updateState.error = err?.message || String(err)
+  })
+
+  if (updateState.autoCheck) {
+    // chờ cửa sổ hiện xong rồi mới kiểm tra, tránh làm chậm lúc khởi động
+    setTimeout(() => global.__electronAppUpdate.check(), 4000)
+  }
 }
 
 function createWindow(port) {

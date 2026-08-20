@@ -55,13 +55,22 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "Youtube Download Tool"
+      "shortcutName": "Youtube Download Tool",
+      "differentialPackage": true
     },
     "portable": {
       "artifactName": "YoutubeDownloadTool-portable-${version}.exe"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "hoangduytn1703",
+        "repo": "download-video"
+      }
+    ]
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "express": "^4.19.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

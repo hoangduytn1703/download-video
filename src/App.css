@@ -446,3 +446,84 @@ button.primary.cut:hover:not(:disabled) {
 input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .row-count { font-size: 13px; color: #a9adc4; }
+
+/* Thanh cập nhật app */
+.upd-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 34px;
+  padding: 11px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  font-size: 13px;
+  color: #a9adc4;
+}
+.upd-bar.hot {
+  background: linear-gradient(90deg, rgba(124, 58, 237, 0.16), rgba(236, 72, 153, 0.1));
+  border-color: rgba(167, 139, 250, 0.45);
+  color: #e9deff;
+}
+.upd-ver { font-weight: 600; color: #cdd1e4; }
+.upd-msg.err { color: #fda4af; }
+.upd-btn {
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  background: linear-gradient(90deg, #7c3aed, #ec4899);
+  border: none;
+  box-shadow: 0 4px 14px rgba(236, 72, 153, 0.3);
+}
+.upd-check { padding: 6px 12px; font-size: 12.5px; }
+.upd-auto {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.upd-auto input { width: 14px; height: 14px; cursor: pointer; }
+
+/* Cài đặt prompt */
+.set-reset {
+  margin-top: 8px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+}
+.set-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 16px;
+  font-size: 13.5px;
+  cursor: pointer;
+  color: #cdd1e4;
+}
+.set-check input { margin-top: 2px; width: 15px; height: 15px; cursor: pointer; flex-shrink: 0; }
+.set-ok { font-size: 13px; color: #86efac; margin: 10px 0 0; }
+.set-warn { font-size: 13px; color: #fcd34d; margin: 10px 0 0; }
+.set-preview {
+  background: rgba(10, 8, 20, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #c3c8d4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.set-seglist {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: #a9adc4;
+  font-size: 12.5px;
+  font-weight: normal;
+}
+.set-seglist li { margin: 3px 0; }

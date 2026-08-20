@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseSegmentsText } from './parse.js'
+import { parseSegmentsText, buildPrompt, validatePrompt } from './parse.js'
 
 test('đọc đúng chuỗi pipe thật của team (từ Gemini)', () => {
   const text =
@@ -60,4 +60,30 @@ test('tiêu đề không dính ký tự thừa của markdown/ngoặc', () => {
   assert.equal(parseSegmentsText('Đoạn mở đầu: 00:46 - 02:46').segments[0].title, 'Đoạn mở đầu')
   assert.equal(parseSegmentsText('- 00:46 - 02:46 Đoạn mở đầu').segments[0].title, 'Đoạn mở đầu')
   assert.equal(parseSegmentsText('P1: 00:46 - 02:46 Đoạn mở đầu').segments[0].title, 'Đoạn mở đầu')
+})
+
+test('buildPrompt giữ yêu cầu người dùng và nối quy tắc định dạng', () => {
+  const custom = 'Cắt cho tôi 3 đoạn hài hước nhất'
+  const withRules = buildPrompt(custom, true)
+  assert.ok(withRules.includes(custom), 'phải giữ nguyên yêu cầu người dùng')
+  assert.ok(withRules.includes('start_1'), 'phải có quy tắc định dạng')
+  const without = buildPrompt(custom, false)
+  assert.equal(without, custom)
+  // prompt trống thì dùng mặc định
+  assert.ok(buildPrompt('', true).includes('start_1'))
+})
+
+test('validatePrompt cảnh báo khi prompt tự viết thiếu phần định dạng', () => {
+  assert.equal(validatePrompt('Cắt cho tôi 3 đoạn hài hước nhất').ok, false)
+  assert.equal(validatePrompt('').ok, false)
+  assert.equal(validatePrompt('Trả về start_1: 0:10 | end_1: 3:15').ok, true)
+  assert.equal(validatePrompt('Trả về JSON có start và end dạng mm:ss').ok, true)
+})
+
+test('prompt mặc định tạo ra text mà parser đọc được', () => {
+  // lấy đúng dòng ví dụ trong quy tắc định dạng làm mẫu kết quả AI
+  const example = buildPrompt('', true).split('\n').find(l => l.startsWith('Name:'))
+  const r = parseSegmentsText(example)
+  assert.equal(r.segments.length, 3)
+  assert.equal(r.segments[0].start, '0:10')
 })

@@ -102,13 +102,45 @@ export function parseSegmentsText(text) {
   return result || { name: '', segments: [] }
 }
 
-// Prompt mẫu để copy đưa cho AI trên browser (Gemini/ChatGPT) — ra đúng định dạng app đọc được
-export const BROWSER_AI_PROMPT = `Phân tích video này và trích xuất 3-5 đoạn hấp dẫn nhất từ đầu đến cuối video (số lượng tùy nội dung), bao gồm các sự kiện quan trọng mở đầu. Mỗi đoạn BẮT BUỘC dài từ 3 đến 5 phút, bỏ qua các phần không quan trọng giữa các đoạn. Ngôn ngữ của tên và tiêu đề theo ngôn ngữ nói trong video.
+// Phần "chọn đoạn thế nào" — người dùng sửa thoải mái trong Cài đặt
+export const DEFAULT_CUT_PROMPT = `Phân tích video này và trích xuất 3-5 đoạn hấp dẫn nhất từ đầu đến cuối video (số lượng tùy nội dung), bao gồm các sự kiện quan trọng mở đầu. Mỗi đoạn BẮT BUỘC dài từ 3 đến 5 phút, bỏ qua các phần không quan trọng giữa các đoạn. Ngôn ngữ của tên và tiêu đề theo ngôn ngữ nói trong video.`
+
+// Phần quy tắc định dạng — CỐ ĐỊNH, app tự nối vào cuối prompt để kết quả luôn đọc được
+export const FORMAT_RULES = `
 
 ** QUY TẮC ĐỊNH DẠNG NGHIÊM NGẶT **:
 Viết TẤT CẢ trên một dòng duy nhất, không thêm bất kỳ chữ nào khác.
+Mốc thời gian phải ở dạng mm:ss hoặc h:mm:ss (ví dụ 3:15 hoặc 1:02:03).
 Giữ đúng số thứ tự N (1, 2, 3...) cho các nhãn: start_N, end_N, title_bottom_N.
 KHÔNG trộn số thứ tự với mốc thời gian (ĐÚNG: end_3: 12:42, SAI: end_12:42).
 
 Cấu trúc chính xác:
 Name: (tên video) | start_1: 0:10 | end_1: 3:15 | title_bottom_1: (tiêu đề P1) | start_2: 3:22 | end_2: 6:55 | title_bottom_2: (tiêu đề P2) | start_3: 8:02 | end_3: 12:42 | title_bottom_3: (tiêu đề P3)`
+
+// Ghép prompt cuối cùng để copy cho AI
+export function buildPrompt(userPrompt, appendRules = true) {
+  const base = String(userPrompt || '').trim() || DEFAULT_CUT_PROMPT
+  return appendRules ? base + FORMAT_RULES : base
+}
+
+// Kiểm tra prompt tự viết có dặn AI trả đúng dạng app đọc được không.
+// Chỉ cần thiết khi người dùng TẮT phần quy tắc định dạng tự động.
+export function validatePrompt(text) {
+  const t = String(text || '')
+  if (!t.trim()) return { ok: false, reason: 'Prompt đang trống' }
+  const hasTimeExample = /\d{1,3}:\d{2}/.test(t) // có ví dụ mốc kiểu 3:15
+  const mentionsFormat =
+    /start[_\s]*\d|start\b.*end\b|json|mm:ss|h:mm:ss|\|/i.test(t)
+  if (hasTimeExample && mentionsFormat) return { ok: true }
+  if (mentionsFormat) {
+    return { ok: true, warn: 'Nên cho AI một ví dụ mốc thời gian cụ thể (vd 3:15) để chắc chắn đúng dạng.' }
+  }
+  return {
+    ok: false,
+    reason:
+      'Prompt chưa dặn AI trả về mốc thời gian theo định dạng cố định — kết quả có thể không cắt được. Bật lại "Tự thêm quy tắc định dạng" hoặc tự mô tả dạng start_1/end_1 (hay mm:ss) trong prompt.',
+  }
+}
+
+// Giữ tên cũ cho tương thích
+export const BROWSER_AI_PROMPT = DEFAULT_CUT_PROMPT + FORMAT_RULES
