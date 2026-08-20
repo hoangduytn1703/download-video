@@ -427,3 +427,22 @@ button.primary.cut:hover:not(:disabled) {
   box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.2);
 }
 .ai-paste::placeholder { color: #5b6170; }
+
+/* Khóa vùng nhập khi đang tải/cắt — tránh dồn việc cùng lúc */
+.card.locked { border-color: rgba(167, 139, 250, 0.35); }
+.card.locked .rows, .card.locked .actions { opacity: 0.5; }
+.locked-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(167, 139, 250, 0.12);
+  border: 1px solid rgba(167, 139, 250, 0.3);
+  border-radius: 10px;
+  padding: 9px 14px;
+  margin-bottom: 14px;
+  font-size: 13.5px;
+  color: #cbb9ff;
+}
+input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.row-count { font-size: 13px; color: #a9adc4; }

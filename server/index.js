@@ -10,6 +10,8 @@ import { loadConfig, saveConfig, analyzeVideo, listModels, normalizeSegments, fo
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT) || 3001
 let maxConcurrent = 3
+// Tran chay song song: che do Cat cho phep toi 10 link mot lan
+const MAX_CONCURRENT_LIMIT = 10
 
 const app = express()
 app.use(express.json())
@@ -156,7 +158,7 @@ app.get('/api/defaults', (req, res) => {
 
 app.post('/api/jobs', (req, res) => {
   const c = parseInt(req.body.concurrency, 10)
-  if (c >= 1 && c <= 5) maxConcurrent = c
+  if (c >= 1 && c <= MAX_CONCURRENT_LIMIT) maxConcurrent = c
   const items = Array.isArray(req.body.items) ? req.body.items : []
   const created = []
   for (const it of items) {
@@ -421,7 +423,7 @@ app.post('/api/analyze', async (req, res) => {
 // Tạo job cắt: tải video gốc rồi cắt thành nhiều clip theo segments
 app.post('/api/cut-jobs', (req, res) => {
   const c = parseInt(req.body?.concurrency, 10)
-  if (c >= 1 && c <= 5) maxConcurrent = c
+  if (c >= 1 && c <= MAX_CONCURRENT_LIMIT) maxConcurrent = c
   const items = Array.isArray(req.body?.items) ? req.body.items : []
   const created = []
   for (const it of items) {

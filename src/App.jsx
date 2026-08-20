@@ -13,6 +13,8 @@ const SHOW_PAUSE_ALL = false
 // Phase 2: phân tích bằng Gemini API ngay trong app (tốn key khi xài số lượng lớn).
 // Hiện tại bước phân tích để AI trên browser làm, app chỉ đọc kết quả dán vào.
 const SHOW_AI_ANALYZE = false
+// Che do Cat: toi da 5 link/lan, va chay song song dung bang so link them vao
+const MAX_CUT_ROWS = 10
 
 let rowKey = 1
 const newRow = (folder = '') => ({ key: rowKey++, url: '', filename: '', folder, aiText: '' })
@@ -61,6 +63,8 @@ export default function App() {
       .then(r => r.json())
       .then(setSettings)
       .catch(() => {})
+    // Đồng bộ danh sách job ngay khi mở app — tránh hiện job "ma" từ phiên trước
+    refresh().catch(() => {})
     return () => clearInterval(pollRef.current)
   }, [])
 
@@ -102,7 +106,10 @@ export default function App() {
     })
   }
 
-  const addRow = () => setRows(rs => [...rs, newRow(defaultFolder)])
+  const rowLimit = mode === 'cut' ? MAX_CUT_ROWS : Infinity
+  const atRowLimit = rows.length >= rowLimit
+
+  const addRow = () => setRows(rs => (rs.length >= rowLimit ? rs : [...rs, newRow(defaultFolder)]))
 
   const pasteLinks = async () => {
     try {
@@ -120,7 +127,10 @@ export default function App() {
         for (const r of filled) {
           if (!r.url && i < urls.length) r.url = urls[i++]
         }
-        while (i < urls.length) filled.push({ ...newRow(defaultFolder), url: urls[i++] })
+        while (i < urls.length && filled.length < rowLimit) filled.push({ ...newRow(defaultFolder), url: urls[i++] })
+        if (i < urls.length) {
+          alert(`Chế độ Cắt chỉ nhận tối đa ${MAX_CUT_ROWS} link mỗi lần — đã lấy ${filled.length} link đầu.`)
+        }
         return [...filled]
       })
     } catch {
@@ -264,7 +274,7 @@ export default function App() {
       await fetch(`${API}/api/cut-jobs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items, concurrency }),
+        body: JSON.stringify({ items, concurrency: items.length }),
       })
       await refresh()
       const sent = new Set(readyRows.map(r => r.key))
@@ -287,7 +297,13 @@ export default function App() {
     await refresh()
   }
 
-  const openFolder = id => fetch(`${API}/api/jobs/${id}/open`, { method: 'POST' })
+  const openFolder = async id => {
+    const res = await fetch(`${API}/api/jobs/${id}/open`, { method: 'POST' }).catch(() => null)
+    if (res?.ok) return
+    // Job không còn bên server (thường do server khởi động lại — danh sách job nằm trong RAM)
+    alert('Mục này không còn trên máy chủ nữa (app đã khởi động lại). Mở thư mục thủ công giúp nhé — danh sách sẽ được làm mới.')
+    await refresh()
+  }
 
   const cancelJob = async j => {
     const name = j.filename || j.url
@@ -406,7 +422,12 @@ export default function App() {
         />
       )}
 
-      <div className="card">
+      <div className={`card${hasRunning ? ' locked' : ''}`}>
+        {hasRunning && (
+          <div className="locked-note">
+            🔒 Đang xử lý — chờ xong rồi thêm link mới nhé (tránh dồn việc cùng lúc)
+          </div>
+        )}
         <div className="rows">
           {rows.map((r, i) => {
             const urlInvalid = r.url.trim() !== '' && !isYouTubeUrl(r.url)
@@ -419,25 +440,28 @@ export default function App() {
                 placeholder="https://www.youtube.com/watch?v=..."
                 value={r.url}
                 onChange={e => updateRow(r.key, { url: e.target.value })}
+                disabled={hasRunning}
               />
               <input
                 className="filename"
                 placeholder={mode === 'cut' ? 'Tên clip (trống = AI đặt)' : 'Tên file (tùy chọn)'}
                 value={r.filename}
                 onChange={e => updateRow(r.key, { filename: e.target.value })}
+                disabled={hasRunning}
               />
               <input
                 className="folder"
                 placeholder="Thư mục tải về"
                 value={r.folder}
                 onChange={e => updateRow(r.key, { folder: e.target.value })}
+                disabled={hasRunning}
               />
-              <button className="btn-icon" title="Chọn thư mục" onClick={() => pickFolder(r.key)}>📁</button>
+              <button className="btn-icon" title="Chọn thư mục" onClick={() => pickFolder(r.key)} disabled={hasRunning}>📁</button>
               <button
                 className="btn-icon"
                 title="Xóa dòng"
                 onClick={() => removeRow(r.key)}
-                disabled={rows.length === 1}
+                disabled={rows.length === 1 || hasRunning}
               >✕</button>
             </div>
             {urlInvalid && (
@@ -450,6 +474,7 @@ export default function App() {
                 placeholder="Dán kết quả AI vào đây (Name: ... | start_1: 0:46 | end_1: 2:46 | title_bottom_1: ... — hoặc mỗi dòng: 0:46 - 2:46 Tiêu đề)"
                 value={r.aiText}
                 onChange={e => onAiTextChange(r.key, e.target.value)}
+                disabled={hasRunning}
               />
             )}
             </div>
@@ -457,16 +482,25 @@ export default function App() {
         </div>
 
         <div className="actions">
-          <button onClick={addRow}>＋ Thêm link</button>
-          <button onClick={pasteLinks}>📋 Dán nhiều link</button>
-          <label className="concurrency">
-            Chạy cùng lúc
-            <select value={concurrency} onChange={e => setConcurrency(Number(e.target.value))}>
-              {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n} video</option>)}
-            </select>
-          </label>
+          <button
+            onClick={addRow}
+            disabled={hasRunning || atRowLimit}
+            title={atRowLimit ? `Chế độ Cắt tối đa ${MAX_CUT_ROWS} link mỗi lần` : ''}
+          >＋ Thêm link</button>
+          <button onClick={pasteLinks} disabled={hasRunning}>📋 Dán nhiều link</button>
+          {mode === 'download' && (
+            <label className="concurrency">
+              Chạy cùng lúc
+              <select value={concurrency} onChange={e => setConcurrency(Number(e.target.value))} disabled={hasRunning}>
+                {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n} video</option>)}
+              </select>
+            </label>
+          )}
+          {mode === 'cut' && (
+            <span className="row-count">{rows.length}/{MAX_CUT_ROWS} link — cắt song song cùng lúc</span>
+          )}
           {mode === 'download' ? (
-            <button className="primary" onClick={download} disabled={submitting || validCount === 0}>
+            <button className="primary" onClick={download} disabled={submitting || hasRunning || validCount === 0}>
               ⬇ Tải xuống ({validCount})
             </button>
           ) : (
@@ -479,7 +513,7 @@ export default function App() {
                   {analyzingCount > 0 ? `🤖 Đang phân tích ${analyzingCount} video...` : `🤖 Phân tích AI (${validCount})`}
                 </button>
               )}
-              <button className="primary cut" onClick={cutAll} disabled={submitting || readyRows.length === 0}>
+              <button className="primary cut" onClick={cutAll} disabled={submitting || hasRunning || readyRows.length === 0}>
                 ✂️ Cắt ({readyRows.length})
               </button>
             </>
