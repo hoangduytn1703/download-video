@@ -56,7 +56,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "shortcutName": "Youtube Download Tool",
-      "differentialPackage": true
+      "differentialPackage": true,
+      "artifactName": "YoutubeDownloadTool-Setup-${version}.exe"
     },
     "portable": {
       "artifactName": "YoutubeDownloadTool-portable-${version}.exe"

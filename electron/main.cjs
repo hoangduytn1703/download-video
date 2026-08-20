@@ -96,6 +96,20 @@ function writeAutoCheck(enabled) {
   } catch {}
 }
 
+// Lỗi thô của electron-updater rất dài (kèm cả header HTTP) — rút gọn cho dễ đọc
+function friendlyUpdateError(err) {
+  const raw = String(err?.message || err || '')
+  if (/Unable to find latest version|No published versions/i.test(raw)) {
+    return 'Chưa có bản phát hành chính thức nào trên GitHub (bản đang có để nhãn Pre-release thì không tính).'
+  }
+  if (/ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNREFUSED|network/i.test(raw)) {
+    return 'Không kết nối được mạng để kiểm tra bản mới.'
+  }
+  if (/404/.test(raw)) return 'Không tìm thấy file cập nhật trong bản phát hành trên GitHub.'
+  if (/sha512|checksum/i.test(raw)) return 'File tải về không khớp mã kiểm tra — thử lại giúp nhé.'
+  return raw.split('\n')[0].slice(0, 160)
+}
+
 // state: idle | checking | available | not-available | downloading | downloaded | error
 const updateState = {
   supported: false,
@@ -121,7 +135,7 @@ function setupAutoUpdate() {
       updateState.error = ''
       autoUpdater.checkForUpdates().catch(err => {
         updateState.state = 'error'
-        updateState.error = err?.message || String(err)
+        updateState.error = friendlyUpdateError(err)
       })
     },
     download: () => {
@@ -130,7 +144,7 @@ function setupAutoUpdate() {
       updateState.percent = 0
       autoUpdater.downloadUpdate().catch(err => {
         updateState.state = 'error'
-        updateState.error = err?.message || String(err)
+        updateState.error = friendlyUpdateError(err)
       })
     },
     install: () => {
@@ -164,7 +178,7 @@ function setupAutoUpdate() {
   })
   autoUpdater.on('error', err => {
     updateState.state = 'error'
-    updateState.error = err?.message || String(err)
+    updateState.error = friendlyUpdateError(err)
   })
 
   if (updateState.autoCheck) {
