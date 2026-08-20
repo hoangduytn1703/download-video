@@ -527,3 +527,16 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-
   font-weight: normal;
 }
 .set-seglist li { margin: 3px 0; }
+
+/* Hai nút cuối modal cho đều nhau: .primary có border:none nên trước đây
+   lệch chiều cao so với nút thường, thêm margin-top làm lệch dọc nữa */
+.settings-actions button {
+  min-width: 132px;
+  padding: 11px 20px;
+  margin-top: 0;
+  border: 1px solid transparent;
+  line-height: 1.2;
+}
+.settings-actions button:not(.primary) {
+  border-color: rgba(255, 255, 255, 0.13);
+}
