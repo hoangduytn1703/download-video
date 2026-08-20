@@ -1,6 +1,8 @@
-node_modules/
-dist/
+*.log
 dist-app/
+dist/
+node_modules/
+release*/
+release-new/
 release/
 resources/bin/
-*.log

@@ -466,6 +466,10 @@ function runJob(job) {
     return
   }
 
+  // Nhớ lại video đã nằm sẵn trong thư mục từ trước hay chưa — nếu có thì sau khi
+  // cắt xong KHÔNG xóa, vì đó là file của người dùng chứ không phải job này tải về
+  if (job.type === 'cut') job.preExisting = Boolean(findDownloadedFile(job.folder, job.filename))
+
   const outTemplate = path.join(job.folder, (job.filename || '%(title)s') + '.%(ext)s')
   const args = [
     '--newline',
@@ -480,21 +484,35 @@ function runJob(job) {
   procs.set(job.id, proc)
   let lastError = ''
 
-  proc.stdout.on('data', chunk => {
-    for (const line of chunk.toString().split(/\r?\n/)) {
-      const pct = line.match(/\[download\]\s+([\d.]+)%/)
-      if (pct) {
-        const raw = parseFloat(pct[1])
-        job.progress = job.type === 'cut' ? Math.round(raw * 0.7) : raw
-        job.message = line.trim()
-        continue
-      }
-      const dest = line.match(/\[download\] Destination: (.+)/) || line.match(/\[Merger\] Merging formats into "(.+)"/)
-      if (dest) {
-        job.filepath = dest[1].trim()
-        job.message = 'File: ' + path.basename(job.filepath)
-      }
+  // Gom theo dòng: chunk stdout có thể cắt ngang dòng (hoặc ngang ký tự UTF-8 tiếng Việt),
+  // parse thẳng từng chunk sẽ bắt hụt dòng Destination/Merger.
+  let stdoutTail = ''
+  const handleLine = line => {
+    const pct = line.match(/\[download\]\s+([\d.]+)%/)
+    if (pct) {
+      const raw = parseFloat(pct[1])
+      job.progress = job.type === 'cut' ? Math.round(raw * 0.7) : raw
+      job.message = line.trim()
+      return
     }
+    const dest =
+      line.match(/\[download\] Destination: (.+)/) ||
+      line.match(/\[Merger\] Merging formats into "(.+)"/) ||
+      line.match(/\[download\] (.+) has already been downloaded/)
+    if (dest) {
+      job.filepath = dest[1].trim()
+      job.message = 'File: ' + path.basename(job.filepath)
+    }
+  }
+
+  proc.stdout.setEncoding('utf8')
+  proc.stdout.on('data', chunk => {
+    const text = stdoutTail + chunk
+    const lines = text.split(/\r?\n/)
+    stdoutTail = lines.pop() ?? '' // phần cuối có thể là dòng dở
+    for (const line of lines) handleLine(line)
+    // dòng progress không có newline (bị \r ghi đè) nên vẫn xử lý phần đuôi
+    if (stdoutTail) handleLine(stdoutTail)
   })
 
   proc.stderr.on('data', chunk => {
@@ -536,10 +554,37 @@ function runJob(job) {
 
 
 // Cắt video gốc thành các clip theo segments — dùng -c copy nên gần như tức thì
+// Dò file vừa tải trong thư mục theo tên gốc — dùng khi không đọc được đường dẫn
+// từ output yt-dlp (ví dụ video đã tải sẵn từ trước nên không có dòng Destination)
+const VIDEO_EXTS = ['.mp4', '.mkv', '.webm', '.mov', '.m4v', '.flv']
+function findDownloadedFile(folder, base) {
+  let files
+  try {
+    files = fs.readdirSync(folder)
+  } catch {
+    return null
+  }
+  for (const ext of VIDEO_EXTS) {
+    if (files.includes(base + ext)) return path.join(folder, base + ext)
+  }
+  // bỏ qua các mảnh rời .f399.mp4 / .f251.webm và file tải dở .part
+  const match = files.find(
+    f =>
+      f.startsWith(base + '.') &&
+      VIDEO_EXTS.includes(path.extname(f).toLowerCase()) &&
+      !/\.f\d+\.[^.]+$/i.test(f)
+  )
+  return match ? path.join(folder, match) : null
+}
+
 async function cutSegments(job) {
   job.status = 'cutting'
-  const input = job.filepath && fs.existsSync(job.filepath) ? job.filepath : null
-  if (!input) return finish(job, 'error', 'Không tìm thấy file video gốc sau khi tải')
+  let input = job.filepath && fs.existsSync(job.filepath) ? job.filepath : null
+  if (!input) input = findDownloadedFile(job.folder, job.filename)
+  if (!input) {
+    return finish(job, 'error', `Không tìm thấy file video gốc trong ${job.folder} (tên bắt đầu bằng "${job.filename}")`)
+  }
+  job.filepath = input
   const base = path.basename(input).replace(/\.[^.]+$/, '')
   const total = job.segments.length
   const made = []
@@ -571,11 +616,15 @@ async function cutSegments(job) {
     .map((s, i) => `P${i + 1} (${formatTimestamp(s.start)} - ${formatTimestamp(s.end)}): ${s.title}`)
     .join('\r\n')
   try { fs.writeFileSync(path.join(job.folder, `${base}_titles.txt`), titles, 'utf8') } catch {}
-  // Xóa video gốc — sản phẩm là các clip; muốn giữ video full thì dùng chế độ Tải video
-  try { fs.rmSync(input, { force: true }) } catch {}
+  // Xóa video gốc do job này tải về (sản phẩm là các clip). File đã có sẵn từ trước
+  // thì giữ nguyên — đó là file của người dùng.
+  if (!job.preExisting) {
+    try { fs.rmSync(input, { force: true }) } catch {}
+  }
   job.filepath = made[0]
   job.progress = 100
-  finish(job, 'done', `Đã cắt ${made.length} clip (${base}_P1…P${made.length}) + file tiêu đề ${base}_titles.txt`)
+  const kept = job.preExisting ? ' (video gốc giữ nguyên)' : ''
+  finish(job, 'done', `Đã cắt ${made.length} clip (${base}_P1…P${made.length}) + ${base}_titles.txt${kept}`)
 }
 
 function runFfmpegCut(job, input, seg, outPath) {
@@ -601,7 +650,8 @@ function cleanupCutOutputs(job, input, base) {
   setTimeout(() => {
     try {
       for (const f of fs.readdirSync(job.folder)) {
-        const isOutput = (f.startsWith(base + '_P') && f.endsWith('.mp4')) || f === `${base}_titles.txt` || f === path.basename(input)
+        const isOriginal = f === path.basename(input) && !job.preExisting
+        const isOutput = (f.startsWith(base + '_P') && f.endsWith('.mp4')) || f === `${base}_titles.txt` || isOriginal
         if (isOutput) { try { fs.rmSync(path.join(job.folder, f), { force: true }) } catch {} }
       }
     } catch {}
