@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { getApiBase, runtime } from './api.js'
 import { isYouTubeUrl } from './youtube.js'
+import { parseSegmentsText, BROWSER_AI_PROMPT } from './parse.js'
 
 export { isYouTubeUrl }
 
@@ -9,9 +10,12 @@ const API = getApiBase(runtime())
 
 // Tạm ẩn nút "Tạm dừng tất cả" — đổi thành true khi muốn bật lại
 const SHOW_PAUSE_ALL = false
+// Phase 2: phân tích bằng Gemini API ngay trong app (tốn key khi xài số lượng lớn).
+// Hiện tại bước phân tích để AI trên browser làm, app chỉ đọc kết quả dán vào.
+const SHOW_AI_ANALYZE = false
 
 let rowKey = 1
-const newRow = (folder = '') => ({ key: rowKey++, url: '', filename: '', folder })
+const newRow = (folder = '') => ({ key: rowKey++, url: '', filename: '', folder, aiText: '' })
 
 // giây -> "m:ss" / "h:mm:ss" để hiển thị trong ô sửa
 const secToText = sec => {
@@ -188,6 +192,41 @@ export default function App() {
     await Promise.all(workers)
   }
 
+  // Dán kết quả AI (từ Gemini/ChatGPT trên browser) → đọc mốc thời gian ngay khi gõ/dán
+  const onAiTextChange = (key, text) => {
+    updateRow(key, { aiText: text })
+    const trimmed = text.trim()
+    if (!trimmed) {
+      setAnalysis(a => {
+        const next = { ...a }
+        delete next[key]
+        return next
+      })
+      return
+    }
+    const parsed = parseSegmentsText(trimmed)
+    if (parsed.segments.length) {
+      patchAnalysis(key, { status: 'ready', name: parsed.name, segments: parsed.segments, error: '' })
+    } else {
+      patchAnalysis(key, {
+        status: 'error',
+        segments: [],
+        error: 'Chưa đọc được mốc thời gian nào — kiểm tra lại text dán vào (cần dạng start_1: 0:46 | end_1: 2:46 ... hoặc mỗi dòng "0:46 - 2:46 Tiêu đề")',
+      })
+    }
+  }
+
+  const [promptCopied, setPromptCopied] = useState(false)
+  const copyPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(BROWSER_AI_PROMPT)
+      setPromptCopied(true)
+      setTimeout(() => setPromptCopied(false), 2500)
+    } catch {
+      alert(BROWSER_AI_PROMPT)
+    }
+  }
+
   const updateSegment = (key, idx, patch) =>
     setAnalysis(a => {
       const entry = a[key]
@@ -296,12 +335,14 @@ export default function App() {
         <p className="hint">
           {mode === 'download'
             ? 'Dán link → đặt tên → chọn folder → nhấn tải, xong! 🚀'
-            : 'Dán link → AI xem video và đề xuất đoạn hay → duyệt/sửa → cắt thành clip nhỏ ✂️'}
+            : 'Dán link → hỏi AI trên browser (copy prompt mẫu) → dán kết quả vào → duyệt/sửa → Cắt ✂️'}
         </p>
         <div className="mode-tabs">
           <button className={mode === 'download' ? 'active' : ''} onClick={() => setMode('download')}>⬇ Tải video</button>
-          <button className={mode === 'cut' ? 'active' : ''} onClick={() => setMode('cut')}>✂️ Cắt clip AI</button>
-          <button className="btn-icon gear" title="Cài đặt AI (API key, prompt)" onClick={() => setSettingsOpen(true)}>⚙️</button>
+          <button className={mode === 'cut' ? 'active' : ''} onClick={() => setMode('cut')}>✂️ Cắt clip</button>
+          {SHOW_AI_ANALYZE && (
+            <button className="btn-icon gear" title="Cài đặt AI (API key, prompt)" onClick={() => setSettingsOpen(true)}>⚙️</button>
+          )}
         </div>
       </header>
 
@@ -402,6 +443,15 @@ export default function App() {
             {urlInvalid && (
               <div className="row-error">⚠ Link không hợp lệ — chỉ nhận link YouTube (youtube.com / youtu.be) thôi nha</div>
             )}
+            {mode === 'cut' && (
+              <textarea
+                className="ai-paste"
+                rows={2}
+                placeholder="Dán kết quả AI vào đây (Name: ... | start_1: 0:46 | end_1: 2:46 | title_bottom_1: ... — hoặc mỗi dòng: 0:46 - 2:46 Tiêu đề)"
+                value={r.aiText}
+                onChange={e => onAiTextChange(r.key, e.target.value)}
+              />
+            )}
             </div>
           )})}
         </div>
@@ -421,9 +471,14 @@ export default function App() {
             </button>
           ) : (
             <>
-              <button className="primary" onClick={analyzeAll} disabled={validCount === 0 || analyzingCount > 0}>
-                {analyzingCount > 0 ? `🤖 Đang phân tích ${analyzingCount} video...` : `🤖 Phân tích AI (${validCount})`}
+              <button onClick={copyPrompt} title="Copy prompt mẫu để dán cho Gemini/ChatGPT trên browser">
+                {promptCopied ? '✓ Đã copy!' : '📋 Copy prompt cho AI'}
               </button>
+              {SHOW_AI_ANALYZE && (
+                <button className="primary" onClick={analyzeAll} disabled={validCount === 0 || analyzingCount > 0}>
+                  {analyzingCount > 0 ? `🤖 Đang phân tích ${analyzingCount} video...` : `🤖 Phân tích AI (${validCount})`}
+                </button>
+              )}
               <button className="primary cut" onClick={cutAll} disabled={submitting || readyRows.length === 0}>
                 ✂️ Cắt ({readyRows.length})
               </button>
