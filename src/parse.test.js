@@ -44,3 +44,20 @@ test('text rác thì trả rỗng, không nổ', () => {
   assert.equal(parseSegmentsText('xin chào không có mốc nào').segments.length, 0)
   assert.equal(parseSegmentsText(null).segments.length, 0)
 })
+
+test('đọc bảng markdown (kiểu ChatGPT/Gemini hay trả về)', () => {
+  const r = parseSegmentsText(`| Phần | Bắt đầu | Kết thúc | Tiêu đề |
+|------|---------|----------|---------|
+| P1 | 00:46 | 02:46 | Đoạn mở đầu |
+| P2 | 04:34 | 06:44 | Cao trào |`)
+  assert.equal(r.segments.length, 2)
+  assert.deepEqual(r.segments[0], { start: '00:46', end: '02:46', title: 'Đoạn mở đầu' })
+  assert.equal(r.segments[1].title, 'Cao trào')
+})
+
+test('tiêu đề không dính ký tự thừa của markdown/ngoặc', () => {
+  assert.equal(parseSegmentsText('[00:46 - 02:46] Đoạn mở đầu').segments[0].title, 'Đoạn mở đầu')
+  assert.equal(parseSegmentsText('Đoạn mở đầu: 00:46 - 02:46').segments[0].title, 'Đoạn mở đầu')
+  assert.equal(parseSegmentsText('- 00:46 - 02:46 Đoạn mở đầu').segments[0].title, 'Đoạn mở đầu')
+  assert.equal(parseSegmentsText('P1: 00:46 - 02:46 Đoạn mở đầu').segments[0].title, 'Đoạn mở đầu')
+})

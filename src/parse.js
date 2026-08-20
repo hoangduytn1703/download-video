@@ -8,7 +8,10 @@ const TIME = /\d{1,3}:\d{1,2}(?::\d{1,2})?|\d{1,4}/
 const isTime = v => /^\d{1,3}(:\d{1,2}){0,2}$/.test(String(v || '').trim())
 
 function cleanTitle(s) {
-  return String(s || '').replace(/^[\s:\-–—.|]+|[\s|]+$/g, '').trim()
+  return String(s || '')
+    .replace(/^[\s:\-–—.|)\]}>*#]+/, '') // ký tự thừa đầu chuỗi: ] ) * # - : ...
+    .replace(/[\s|:\-–—([{<]+$/, '') // và cuối chuỗi
+    .trim()
 }
 
 function fromJson(text) {
@@ -71,10 +74,31 @@ function fromLines(text) {
   return segments.length ? { name: '', segments } : null
 }
 
+// Bảng markdown — AI hay trả kiểu này: | P1 | 00:46 | 02:46 | Tiêu đề |
+function fromTable(text) {
+  const segments = []
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if ((line.match(/\|/g) || []).length < 2) continue
+    if (/^\|[\s:|-]+\|$/.test(line)) continue // dòng kẻ ngăn của bảng
+    const cells = line.split('|').map(c => c.trim()).filter(Boolean)
+    const timeIdx = []
+    cells.forEach((c, i) => { if (isTime(c)) timeIdx.push(i) })
+    if (timeIdx.length < 2) continue
+    const [a, b] = timeIdx
+    // tiêu đề: ô chữ dài nhất không phải mốc thời gian và không phải nhãn P1/P2
+    const title = cells
+      .filter((c, i) => i !== a && i !== b && !isTime(c) && !/^P?\d+[.)]?$/i.test(c))
+      .sort((x, y) => y.length - x.length)[0]
+    segments.push({ start: cells[a], end: cells[b], title: cleanTitle(title) })
+  }
+  return segments.length ? { name: '', segments } : null
+}
+
 export function parseSegmentsText(text) {
   const t = String(text || '').trim()
   if (!t) return { name: '', segments: [] }
-  const result = fromJson(t) || fromPipeFormat(t) || fromLines(t)
+  const result = fromJson(t) || fromPipeFormat(t) || fromTable(t) || fromLines(t)
   return result || { name: '', segments: [] }
 }
 
