@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { getApiBase, runtime } from './api.js'
 import { isYouTubeUrl } from './youtube.js'
-import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT } from './parse.js'
+import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource } from './parse.js'
 
 export { isYouTubeUrl }
 
@@ -10,9 +10,8 @@ const API = getApiBase(runtime())
 
 // Tạm ẩn nút "Tạm dừng tất cả" — đổi thành true khi muốn bật lại
 const SHOW_PAUSE_ALL = false
-// Phase 2: phân tích bằng Gemini API ngay trong app (tốn key khi xài số lượng lớn).
-// Hiện tại bước phân tích để AI trên browser làm, app chỉ đọc kết quả dán vào.
-const SHOW_AI_ANALYZE = false
+// Phase 2: Gemini API analyze in-app (costs quota at volume).
+const SHOW_AI_ANALYZE = true
 // Che do Cat: toi da 5 link/lan, va chay song song dung bang so link them vao
 const MAX_CUT_ROWS = 10
 
@@ -43,6 +42,8 @@ export default function App() {
   const [analysis, setAnalysis] = useState({})
   const [settings, setSettings] = useState(null) // { hasGeminiKey, prompt, model }
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [autoCut, setAutoCut] = useState(false)
+  const [aiSource, setAiSource] = useState('app') // 'app' | 'youtube'
   const pollRef = useRef(null)
 
   const refresh = async () => {
@@ -167,6 +168,29 @@ export default function App() {
   const patchAnalysis = (key, patch) =>
     setAnalysis(a => ({ ...a, [key]: { ...(a[key] || {}), ...patch } }))
 
+  const dropRows = keys => {
+    const sent = new Set(keys)
+    setRows(rs => {
+      const left = rs.filter(r => !sent.has(r.key))
+      return left.length ? left : [newRow(defaultFolder)]
+    })
+    setAnalysis(a => {
+      const next = { ...a }
+      for (const k of sent) delete next[k]
+      return next
+    })
+  }
+
+  const enqueueCutJobs = async items => {
+    if (!items.length) return
+    await fetch(`${API}/api/cut-jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items, concurrency: items.length }),
+    })
+    await refresh()
+  }
+
   const analyzeAll = async () => {
     if (settings && !settings.hasGeminiKey) {
       setSettingsOpen(true)
@@ -174,9 +198,10 @@ export default function App() {
     }
     const targets = rows.filter(r => isYouTubeUrl(r.url) && analysis[r.key]?.status !== 'analyzing')
     if (!targets.length) return
+    const cutImmediately = autoCut
     const pending = [...targets]
-    // tối đa 2 video phân tích song song để không dồn quota Gemini
-    const workers = Array.from({ length: Math.min(2, pending.length) }, async () => {
+    const parallel = aiSource === 'youtube' ? 1 : Math.min(2, pending.length)
+    const workers = Array.from({ length: parallel }, async () => {
       while (pending.length) {
         const r = pending.shift()
         patchAnalysis(r.key, { status: 'analyzing', error: '' })
@@ -184,15 +209,21 @@ export default function App() {
           const res = await fetch(`${API}/api/analyze`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: r.url }),
+            body: JSON.stringify({ url: r.url, source: aiSource }),
           })
           const d = await res.json().catch(() => ({}))
           if (!res.ok || !d.ok) throw new Error(d.message || `Phân tích thất bại (HTTP ${res.status})`)
-          patchAnalysis(r.key, {
+          const ready = {
             status: 'ready',
             name: d.name,
             segments: d.segments.map(s => ({ start: secToText(s.start), end: secToText(s.end), title: s.title })),
-          })
+          }
+          patchAnalysis(r.key, ready)
+          const items = jobsToEnqueueAfterAnalyze(cutImmediately, r, ready)
+          if (items.length) {
+            await enqueueCutJobs(items)
+            dropRows([r.key])
+          }
         } catch (e) {
           patchAnalysis(r.key, { status: 'error', error: e?.message || 'Phân tích thất bại' })
           if (/API key/i.test(e?.message || '')) setSettingsOpen(true)
@@ -265,28 +296,9 @@ export default function App() {
     if (!readyRows.length) return
     setSubmitting(true)
     try {
-      const items = readyRows.map(r => ({
-        url: r.url,
-        filename: r.filename || analysis[r.key].name,
-        folder: r.folder,
-        segments: analysis[r.key].segments,
-      }))
-      await fetch(`${API}/api/cut-jobs`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items, concurrency: items.length }),
-      })
-      await refresh()
-      const sent = new Set(readyRows.map(r => r.key))
-      setRows(rs => {
-        const left = rs.filter(r => !sent.has(r.key))
-        return left.length ? left : [newRow(defaultFolder)]
-      })
-      setAnalysis(a => {
-        const next = { ...a }
-        for (const k of sent) delete next[k]
-        return next
-      })
+      const items = readyRows.flatMap(r => jobsToEnqueueAfterAnalyze(true, r, analysis[r.key]))
+      await enqueueCutJobs(items)
+      dropRows(readyRows.map(r => r.key))
     } finally {
       setSubmitting(false)
     }
@@ -343,6 +355,7 @@ export default function App() {
 
   const validCount = rows.filter(r => isYouTubeUrl(r.url)).length
   const analyzingCount = rows.filter(r => analysis[r.key]?.status === 'analyzing').length
+  const cutUi = cutUiForSource(aiSource)
 
   return (
     <div className="app">
@@ -351,7 +364,9 @@ export default function App() {
         <p className="hint">
           {mode === 'download'
             ? 'Dán link → đặt tên → chọn folder → nhấn tải, xong! 🚀'
-            : 'Dán link → hỏi AI trên browser (copy prompt mẫu) → dán kết quả vào → duyệt/sửa → Cắt ✂️'}
+            : cutUi.showPaste
+              ? 'Dán link → Phân tích: cửa sổ Chrome riêng của tool (đăng nhập Google trong cửa sổ đó). Chrome thường vẫn dùng được cho app.'
+              : 'Dán link → Phân tích AI (phụ đề, nhanh) → duyệt/sửa → Cắt'}
         </p>
         <div className="mode-tabs">
           <button className={mode === 'download' ? 'active' : ''} onClick={() => setMode('download')}>⬇ Tải video</button>
@@ -467,7 +482,7 @@ export default function App() {
             {urlInvalid && (
               <div className="row-error">⚠ Link không hợp lệ — chỉ nhận link YouTube (youtube.com / youtu.be) thôi nha</div>
             )}
-            {mode === 'cut' && (
+            {mode === 'cut' && cutUi.showPaste && (
               <textarea
                 className="ai-paste"
                 rows={2}
@@ -505,10 +520,38 @@ export default function App() {
             </button>
           ) : (
             <>
-              <button onClick={copyPrompt} title="Copy prompt mẫu để dán cho Gemini/ChatGPT trên browser">
-                {promptCopied ? '✓ Đã copy!' : '📋 Copy prompt cho AI'}
-              </button>
-              {SHOW_AI_ANALYZE && (
+              <div className="view-toggle" title="Phụ đề + Gemini trong app (nhanh), hoặc tự mở YouTube Hỏi AI">
+                <button
+                  className={aiSource === 'app' ? 'active' : ''}
+                  onClick={() => setAiSource('app')}
+                  disabled={hasRunning || analyzingCount > 0}
+                >AI trong app</button>
+                <button
+                  className={aiSource === 'youtube' ? 'active' : ''}
+                  onClick={() => setAiSource('youtube')}
+                  disabled={hasRunning || analyzingCount > 0}
+                >AI trên YouTube</button>
+              </div>
+              {cutUi.showAutoCut && (
+                <div className="view-toggle" title="Sau khi AI trả mốc: duyệt rồi cắt, hoặc tự cắt ngay">
+                  <button
+                    className={!autoCut ? 'active' : ''}
+                    onClick={() => setAutoCut(false)}
+                    disabled={hasRunning || analyzingCount > 0}
+                  >Duyệt rồi cắt</button>
+                  <button
+                    className={autoCut ? 'active' : ''}
+                    onClick={() => setAutoCut(true)}
+                    disabled={hasRunning || analyzingCount > 0}
+                  >Tự cắt</button>
+                </div>
+              )}
+              {cutUi.showCopyPrompt && (
+                <button onClick={copyPrompt} title="Copy prompt mẫu để dán cho Gemini/ChatGPT trên browser">
+                  {promptCopied ? '✓ Đã copy!' : '📋 Copy prompt cho AI'}
+                </button>
+              )}
+              {cutUi.showAnalyze && (
                 <button className="primary" onClick={analyzeAll} disabled={validCount === 0 || analyzingCount > 0}>
                   {analyzingCount > 0 ? `🤖 Đang phân tích ${analyzingCount} video...` : `🤖 Phân tích AI (${validCount})`}
                 </button>

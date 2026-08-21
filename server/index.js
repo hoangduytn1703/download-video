@@ -1,11 +1,13 @@
 import express from 'express'
-import { spawn } from 'child_process'
+import { spawn, execFileSync } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { fileURLToPath } from 'url'
 import { collectSpawnOutput, sendJsonOnce } from './http-utils.js'
 import { loadConfig, saveConfig, analyzeVideo, listModels, normalizeSegments, formatTimestamp, DEFAULT_PROMPT, DEFAULT_MODEL } from './gemini.js'
+import { fetchTranscript } from './transcript.js'
+import { analyzeViaYoutubeAsk, NO_ASK_MESSAGE } from './youtube-ask.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT) || 3001
@@ -47,10 +49,14 @@ app.use((req, res, next) => {
 })
 
 function resolveCommand(name) {
-  // App desktop truyền sẵn đường dẫn tới binary đóng gói kèm
   const fromEnv = process.env[`${name.replace(/-/g, '_').toUpperCase()}_PATH`]
   if (fromEnv && fs.existsSync(fromEnv)) return fromEnv
-  const dirs = [path.join(os.homedir(), '.local', 'bin'), '/usr/local/bin', '/usr/bin']
+  const dirs = [
+    path.join(__dirname, '..', 'resources', 'bin'),
+    path.join(os.homedir(), '.local', 'bin'),
+    '/usr/local/bin',
+    '/usr/bin',
+  ]
   const names = process.platform === 'win32' ? [`${name}.exe`, name] : [name]
   for (const dir of dirs) {
     for (const filename of names) {
@@ -58,6 +64,11 @@ function resolveCommand(name) {
       if (fs.existsSync(candidate)) return candidate
     }
   }
+  try {
+    const finder = process.platform === 'win32' ? 'where' : 'which'
+    const out = execFileSync(finder, [name], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]
+    if (out && fs.existsSync(out)) return out
+  } catch {}
   return name
 }
 
@@ -441,13 +452,29 @@ app.get('/api/models', async (req, res) => {
   }
 })
 
-// Gemini xem video YouTube trực tiếp từ link và đề xuất các đoạn nên cắt
+// Gemini phân tích: mặc định dùng phụ đề (nhanh). source=youtube thì điều khiển Hỏi AI trên YouTube.
 app.post('/api/analyze', async (req, res) => {
   const url = (req.body?.url || '').trim()
   if (!isYouTubeUrl(url)) return res.status(400).json({ ok: false, message: 'Link YouTube không hợp lệ' })
   const cfg = loadConfig()
   try {
-    const result = await analyzeVideo(url, { apiKey: cfg.geminiKey, prompt: cfg.prompt, model: cfg.model })
+    const source = req.body?.source
+    if (source === 'youtube' || source === 'browser') {
+      try {
+        const result = await analyzeViaYoutubeAsk(url, { prompt: cfg.prompt })
+        return res.json({ ok: true, ...result })
+      } catch (err) {
+        if ((err?.message || '') !== NO_ASK_MESSAGE) throw err
+        console.warn('[analyze] YouTube Ask missing, falling back to transcript')
+      }
+    }
+    let transcript = null
+    try {
+      transcript = await fetchTranscript(url, YTDLP)
+    } catch (err) {
+      console.warn('[analyze] transcript failed, falling back to video:', err?.message || err)
+    }
+    const result = await analyzeVideo(url, { apiKey: cfg.geminiKey, prompt: cfg.prompt, model: cfg.model, transcript })
     res.json({ ok: true, ...result })
   } catch (err) {
     res.status(422).json({ ok: false, message: err?.message || String(err) })

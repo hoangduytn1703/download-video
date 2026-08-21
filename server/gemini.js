@@ -1,12 +1,13 @@
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { DEFAULT_CUT_PROMPT } from './default-prompt.js'
 
 // Cấu hình người dùng (API key, prompt) lưu ngoài repo — mỗi máy một file riêng
 const CONFIG_DIR = path.join(os.homedir(), '.youtube-download-tool')
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
 
-export const DEFAULT_PROMPT = `Trích xuất 3-5 đoạn video hấp dẫn nhất từ đầu đến cuối video (số lượng tùy nội dung), bao gồm các sự kiện quan trọng mở đầu. Mỗi đoạn BẮT BUỘC dài từ 3 đến 5 phút, bỏ qua các phần không quan trọng ở giữa các đoạn. Ngôn ngữ của name và title phải theo ngôn ngữ nói trong video. Đặt name là tiêu đề tổng ngắn gọn giật gân cho video, và title là tiêu đề hấp dẫn cho từng đoạn.`
+export const DEFAULT_PROMPT = DEFAULT_CUT_PROMPT
 
 export const DEFAULT_MODEL = 'gemini-3.6-flash'
 
@@ -120,13 +121,17 @@ export async function analyzeVideo(url, opts = {}) {
   throw lastErr
 }
 
-async function analyzeVideoOnce(url, { apiKey, prompt, model } = {}) {
+async function analyzeVideoOnce(url, { apiKey, prompt, model, transcript } = {}) {
   if (!apiKey) throw new Error('Chưa có Gemini API key — vào Cài đặt (⚙️) để nhập')
   const usedModel = model || DEFAULT_MODEL
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${usedModel}:generateContent`
+  const task = prompt || DEFAULT_PROMPT
+  const parts = transcript
+    ? [{ text: `${task}\n\nTimestamped transcript of the video:\n${transcript}` }]
+    : [{ fileData: { fileUri: url } }, { text: task }]
 
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 5 * 60 * 1000)
+  const timer = setTimeout(() => controller.abort(), transcript ? 90 * 1000 : 5 * 60 * 1000)
   let res
   try {
     res = await fetch(endpoint, {
@@ -134,12 +139,7 @@ async function analyzeVideoOnce(url, { apiKey, prompt, model } = {}) {
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
       signal: controller.signal,
       body: JSON.stringify({
-        contents: [{
-          parts: [
-            { fileData: { fileUri: url } },
-            { text: prompt || DEFAULT_PROMPT },
-          ],
-        }],
+        contents: [{ parts }],
         generationConfig: {
           responseMimeType: 'application/json',
           responseSchema: RESPONSE_SCHEMA,
@@ -147,7 +147,7 @@ async function analyzeVideoOnce(url, { apiKey, prompt, model } = {}) {
       }),
     })
   } catch (err) {
-    if (err?.name === 'AbortError') throw new Error('Gemini phân tích quá lâu (hơn 5 phút) — thử lại hoặc dùng video ngắn hơn')
+    if (err?.name === 'AbortError') throw new Error('Gemini phân tích quá lâu — thử lại hoặc dùng video ngắn hơn')
     throw new Error('Không gọi được Gemini API: ' + (err?.message || err))
   } finally {
     clearTimeout(timer)

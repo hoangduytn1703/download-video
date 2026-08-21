@@ -4,6 +4,10 @@
 // 2. JSON: {name, segments:[{start,end,title}]} hoặc mảng [{start,end,title}]
 // 3. Mỗi dòng một đoạn: "00:46 - 02:46 Tiêu đề" (chấp nhận -, –, —, ->, đến, to)
 
+import { DEFAULT_CUT_PROMPT } from '../server/default-prompt.js'
+
+export { DEFAULT_CUT_PROMPT }
+
 const TIME = /\d{1,3}:\d{1,2}(?::\d{1,2})?|\d{1,4}/
 const isTime = v => /^\d{1,3}(:\d{1,2}){0,2}$/.test(String(v || '').trim())
 
@@ -102,9 +106,6 @@ export function parseSegmentsText(text) {
   return result || { name: '', segments: [] }
 }
 
-// Phần "chọn đoạn thế nào" — người dùng sửa thoải mái trong Cài đặt
-export const DEFAULT_CUT_PROMPT = `Phân tích video này và trích xuất 3-5 đoạn hấp dẫn nhất từ đầu đến cuối video (số lượng tùy nội dung), bao gồm các sự kiện quan trọng mở đầu. Mỗi đoạn BẮT BUỘC dài từ 3 đến 5 phút, bỏ qua các phần không quan trọng giữa các đoạn. Ngôn ngữ của tên và tiêu đề theo ngôn ngữ nói trong video.`
-
 // Phần quy tắc định dạng — CỐ ĐỊNH, app tự nối vào cuối prompt để kết quả luôn đọc được
 export const FORMAT_RULES = `
 
@@ -144,3 +145,25 @@ export function validatePrompt(text) {
 
 // Giữ tên cũ cho tương thích
 export const BROWSER_AI_PROMPT = DEFAULT_CUT_PROMPT + FORMAT_RULES
+
+// After Gemini finishes one video: review mode waits; auto-cut enqueues that row now.
+export function jobsToEnqueueAfterAnalyze(autoCut, row, analysis) {
+  if (!autoCut || !row || !analysis?.segments?.length) return []
+  return [{
+    url: row.url,
+    filename: (row.filename || analysis.name || '').trim(),
+    folder: row.folder || '',
+    segments: analysis.segments,
+  }]
+}
+
+// AI trên YouTube (tự bấm Hỏi AI) vs AI trong app (phụ đề + Gemini).
+export function cutUiForSource(source) {
+  const youtube = source === 'youtube' || source === 'browser'
+  return {
+    showAnalyze: true,
+    showPaste: youtube,
+    showCopyPrompt: youtube,
+    showAutoCut: true,
+  }
+}

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseSegmentsText, buildPrompt, validatePrompt } from './parse.js'
+import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource } from './parse.js'
 
 test('đọc đúng chuỗi pipe thật của team (từ Gemini)', () => {
   const text =
@@ -86,4 +86,55 @@ test('prompt mặc định tạo ra text mà parser đọc được', () => {
   const r = parseSegmentsText(example)
   assert.equal(r.segments.length, 3)
   assert.equal(r.segments[0].start, '0:10')
+})
+
+test('default cut prompt requires Spanish TikTok titles and 70-150s clips', () => {
+  assert.match(DEFAULT_CUT_PROMPT, /Tây Ban Nha/i)
+  assert.match(DEFAULT_CUT_PROMPT, /70/)
+  assert.match(DEFAULT_CUT_PROMPT, /150|2 phút 30/)
+  assert.match(DEFAULT_CUT_PROMPT, /intro/i)
+  assert.match(DEFAULT_CUT_PROMPT, /outro/i)
+})
+
+const sampleRow = { url: 'https://youtu.be/abcdefghijk', filename: '', folder: 'D:\\out' }
+const sampleAnalysis = {
+  name: 'Rescate en el mar',
+  segments: [{ start: '1:10', end: '2:40', title: 'Rescate heroico' }],
+}
+
+test('review mode does not enqueue a cut job after analyze', () => {
+  assert.deepEqual(jobsToEnqueueAfterAnalyze(false, sampleRow, sampleAnalysis), [])
+})
+
+test('auto-cut enqueues that row as soon as analyze succeeds', () => {
+  assert.deepEqual(jobsToEnqueueAfterAnalyze(true, sampleRow, sampleAnalysis), [{
+    url: sampleRow.url,
+    filename: 'Rescate en el mar',
+    folder: sampleRow.folder,
+    segments: sampleAnalysis.segments,
+  }])
+})
+
+test('auto-cut uses the custom filename when the user typed one', () => {
+  const row = { ...sampleRow, filename: 'clip-gia-lai' }
+  const [item] = jobsToEnqueueAfterAnalyze(true, row, sampleAnalysis)
+  assert.equal(item.filename, 'clip-gia-lai')
+})
+
+test('auto-cut skips a row with no valid segments', () => {
+  assert.deepEqual(jobsToEnqueueAfterAnalyze(true, sampleRow, { name: 'X', segments: [] }), [])
+  assert.deepEqual(jobsToEnqueueAfterAnalyze(true, sampleRow, null), [])
+})
+
+test('app AI source shows analyze, hides paste; YouTube source keeps paste as backup', () => {
+  const app = cutUiForSource('app')
+  assert.equal(app.showAnalyze, true)
+  assert.equal(app.showPaste, false)
+  assert.equal(app.showCopyPrompt, false)
+  assert.equal(app.showAutoCut, true)
+  const youtube = cutUiForSource('youtube')
+  assert.equal(youtube.showAnalyze, true)
+  assert.equal(youtube.showPaste, true)
+  assert.equal(youtube.showCopyPrompt, true)
+  assert.equal(youtube.showAutoCut, true)
 })
