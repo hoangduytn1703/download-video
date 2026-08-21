@@ -754,6 +754,7 @@ function SettingsModal({ settings, onClose, onSaved }) {
   const [promptDraft, setPromptDraft] = useState(settings?.prompt || DEFAULT_CUT_PROMPT)
   const [appendRules, setAppendRules] = useState(settings?.appendFormatRules !== false)
   const [modelDraft, setModelDraft] = useState(settings?.model || 'gemini-3.6-flash')
+  const [speedDraft, setSpeedDraft] = useState(settings?.speedMode === 'quality' ? 'quality' : 'fast')
   const [models, setModels] = useState(FALLBACK_MODELS)
   const [sample, setSample] = useState('')
   const [showFull, setShowFull] = useState(false)
@@ -789,6 +790,7 @@ function SettingsModal({ settings, onClose, onSaved }) {
           prompt: promptDraft,
           appendFormatRules: appendRules,
           model: modelDraft,
+          speedMode: speedDraft,
         }),
       })
       const d = await res.json()
@@ -865,6 +867,19 @@ function SettingsModal({ settings, onClose, onSaved }) {
 
         {SHOW_AI_ANALYZE && (
           <>
+            <label className="set-label">Tốc độ phân tích</label>
+            <div className="speed-options">
+              <label className="set-check">
+                <input type="radio" name="speed" checked={speedDraft === 'fast'} onChange={() => setSpeedDraft('fast')} />
+                <span>⚡ <b>Nhanh</b> (~5–10 giây/video) — dùng model lite khi video có phụ đề. Tiêu đề có thể ít giật gân hơn một chút.</span>
+              </label>
+              <label className="set-check">
+                <input type="radio" name="speed" checked={speedDraft === 'quality'} onChange={() => setSpeedDraft('quality')} />
+                <span>🎯 <b>Kỹ</b> (~30 giây/video) — luôn dùng model chính, tiêu đề hook mạnh hơn.</span>
+              </label>
+            </div>
+            <p className="set-note">Video không có phụ đề thì luôn dùng model chính và mất ~45 giây (Gemini phải xem video).</p>
+
             <label className="set-label">Gemini API key</label>
             <input
               type="password"

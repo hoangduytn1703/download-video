@@ -403,6 +403,7 @@ app.get('/api/settings', (req, res) => {
     prompt: cfg.prompt || '',
     appendFormatRules: cfg.appendFormatRules !== false, // mặc định bật
     model: cfg.model || DEFAULT_MODEL,
+    speedMode: cfg.speedMode === 'quality' ? 'quality' : 'fast',
   })
 })
 
@@ -412,6 +413,7 @@ app.post('/api/settings', (req, res) => {
   if (typeof req.body?.prompt === 'string') patch.prompt = req.body.prompt.trim()
   if (typeof req.body?.model === 'string' && req.body.model.trim()) patch.model = req.body.model.trim()
   if (typeof req.body?.appendFormatRules === 'boolean') patch.appendFormatRules = req.body.appendFormatRules
+  if (req.body?.speedMode === 'fast' || req.body?.speedMode === 'quality') patch.speedMode = req.body.speedMode
   const cfg = saveConfig(patch)
   res.json({
     ok: true,
@@ -419,6 +421,7 @@ app.post('/api/settings', (req, res) => {
     prompt: cfg.prompt || '',
     appendFormatRules: cfg.appendFormatRules !== false,
     model: cfg.model || DEFAULT_MODEL,
+    speedMode: cfg.speedMode === 'quality' ? 'quality' : 'fast',
   })
 })
 
@@ -474,7 +477,21 @@ app.post('/api/analyze', async (req, res) => {
     } catch (err) {
       console.warn('[analyze] transcript failed, falling back to video:', err?.message || err)
     }
-    const result = await analyzeVideo(url, { apiKey: cfg.geminiKey, prompt: cfg.prompt, model: cfg.model, transcript })
+    const base = { apiKey: cfg.geminiKey, prompt: cfg.prompt, transcript }
+    // Chế độ Nhanh (mặc định): có phụ đề thì phân tích bằng model lite (~1-3s thay vì ~25s).
+    // Lite lỗi hoặc trả kết quả rỗng thì tự chạy lại bằng model chính — không hỏng luồng.
+    const useFast = transcript && cfg.speedMode !== 'quality'
+    let result
+    if (useFast) {
+      try {
+        result = await analyzeVideo(url, { ...base, model: cfg.fastModel || 'gemini-flash-lite-latest' })
+      } catch (err) {
+        console.warn('[analyze] fast model failed, retrying with main model:', err?.message || err)
+      }
+    }
+    if (!result) {
+      result = await analyzeVideo(url, { ...base, model: cfg.model })
+    }
     res.json({ ok: true, ...result })
   } catch (err) {
     res.status(422).json({ ok: false, message: err?.message || String(err) })

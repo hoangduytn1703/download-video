@@ -546,3 +546,6 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-
    nút Đóng giãn theo chiều cao hàng -> lệch đúng 18px */
 .settings-actions { align-items: center; }
 .overlay-card .settings-actions button { margin-top: 0; }
+
+.speed-options { display: flex; flex-direction: column; gap: 8px; }
+.speed-options .set-check { margin-top: 0; }
