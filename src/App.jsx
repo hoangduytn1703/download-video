@@ -200,7 +200,7 @@ export default function App() {
     if (!targets.length) return
     const cutImmediately = autoCut
     const pending = [...targets]
-    const parallel = aiSource === 'youtube' ? 1 : Math.min(2, pending.length)
+    const parallel = aiSource === 'youtube' ? 1 : Math.min(5, pending.length)
     const workers = Array.from({ length: parallel }, async () => {
       while (pending.length) {
         const r = pending.shift()
@@ -365,7 +365,7 @@ export default function App() {
           {mode === 'download'
             ? 'Dán link → đặt tên → chọn folder → nhấn tải, xong! 🚀'
             : cutUi.showPaste
-              ? 'Dán link → Phân tích: cửa sổ Chrome riêng của tool (đăng nhập Google trong cửa sổ đó). Chrome thường vẫn dùng được cho app.'
+              ? 'Đóng hết Chrome → Phân tích: app mở Chrome đã login của bạn. Giữ cửa sổ đó, mở thêm tab app nếu cần.'
               : 'Dán link → Phân tích AI (phụ đề, nhanh) → duyệt/sửa → Cắt'}
         </p>
         <div className="mode-tabs">

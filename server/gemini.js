@@ -128,7 +128,7 @@ async function analyzeVideoOnce(url, { apiKey, prompt, model, transcript } = {})
   const task = prompt || DEFAULT_PROMPT
   const parts = transcript
     ? [{ text: `${task}\n\nTimestamped transcript of the video:\n${transcript}` }]
-    : [{ fileData: { fileUri: url } }, { text: task }]
+    : [{ fileData: { fileUri: url }, videoMetadata: { fps: 0.2 } }, { text: task }]
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), transcript ? 90 * 1000 : 5 * 60 * 1000)
@@ -143,6 +143,9 @@ async function analyzeVideoOnce(url, { apiKey, prompt, model, transcript } = {})
         generationConfig: {
           responseMimeType: 'application/json',
           responseSchema: RESPONSE_SCHEMA,
+          // Không có phụ đề mới phải xem video: nội dung nằm ở lời thoại nên
+          // giảm khung hình (0.2fps) + độ phân giải thấp cho nhanh và rẻ
+          ...(transcript ? {} : { mediaResolution: 'MEDIA_RESOLUTION_LOW' }),
         },
       }),
     })

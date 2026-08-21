@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseAskText, isClosedBrowserError, isProfileLockError } from './youtube-ask.js'
+import { parseAskText, isClosedBrowserError, isProfileLockError, chromeUserDataDir } from './youtube-ask.js'
 
 test('parseAskText reads CUT_RESULT pipe block and ignores prompt example', () => {
   const page = `Hỏi về video này
@@ -24,4 +24,9 @@ test('Chrome profile-lock errors are detected', () => {
   assert.equal(isProfileLockError('Browser closed: ProcessSingleton'), true)
   assert.equal(isProfileLockError('user data directory is already in use'), true)
   assert.equal(isProfileLockError('Timeout'), false)
+})
+
+test('chromeUserDataDir points at this OS Chrome profile folder', () => {
+  const dir = chromeUserDataDir()
+  assert.match(dir.replace(/\\/g, '/'), /Google\/Chrome/i)
 })

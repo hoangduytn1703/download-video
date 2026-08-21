@@ -3,14 +3,13 @@ import path from 'path'
 import { parseSegmentsText, buildPrompt } from '../src/parse.js'
 import { normalizeSegments } from './gemini.js'
 
-const PROFILE = path.join(os.homedir(), '.youtube-download-tool', 'chrome-profile')
 const ASK_BTN = /Đặt câu hỏi|Hỏi về video này|Ask about this video|^Ask$/i
 const ASK_BOX = /Đặt câu hỏi|Ask a question|Ask about this video/i
 const MARKER = 'CUT_RESULT:'
-export const NO_ASK_MESSAGE = 'Cửa sổ Chrome của tool không có nút Đặt câu hỏi trên video. Đăng nhập Google trong đúng cửa sổ đó (không phải Chrome thường), rồi bấm Phân tích lại. Nút Ask Gemini trên thanh công cụ không phải Hỏi AI của YouTube.'
-export const CHROME_LOCK_MESSAGE = 'Chrome đang mở nên không dùng được profile có nút Đặt câu hỏi. Đóng hết cửa sổ Chrome rồi bấm Phân tích lại — app sẽ mở đúng Chrome của bạn.'
+export const NO_ASK_MESSAGE = 'Video không có nút Đặt câu hỏi dưới player (Ask Gemini trên thanh Chrome không tính). Cần đăng nhập Google trong đúng cửa sổ Chrome app vừa mở.'
+export const CHROME_LOCK_MESSAGE = 'Chrome đang mở nên không lấy được profile đã login. Tắt hẳn Chrome (cả icon khay hệ thống) rồi bấm Phân tích lại — app sẽ mở Chrome của bạn, có sẵn Đặt câu hỏi.'
 
-const STEALTH_ARGS = ['--disable-blink-features=AutomationControlled', '--no-first-run']
+const STEALTH_ARGS = ['--disable-blink-features=AutomationControlled', '--no-first-run', '--profile-directory=Default']
 
 let ctxPromise = null
 let queue = Promise.resolve()
@@ -44,8 +43,14 @@ async function hideAutomation(ctx) {
   })
 }
 
-async function launchToolChrome(chromium) {
-  const ctx = await chromium.launchPersistentContext(PROFILE, {
+export function chromeUserDataDir() {
+  if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'User Data')
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'Google', 'Chrome')
+  return path.join(os.homedir(), '.config', 'google-chrome')
+}
+
+async function launchUserChrome(chromium) {
+  const ctx = await chromium.launchPersistentContext(chromeUserDataDir(), {
     channel: 'chrome',
     headless: false,
     viewport: { width: 1400, height: 900 },
@@ -65,12 +70,10 @@ async function getContext(chromium) {
     } catch {}
     forgetContext()
   }
-  ctxPromise = launchToolChrome(chromium).catch(err => {
+  ctxPromise = launchUserChrome(chromium).catch(err => {
     forgetContext()
-    if (isProfileLockError(err?.message)) {
-      throw new Error('Cửa sổ Chrome của tool đang bị khóa. Đóng cửa sổ "Chrome" do app mở rồi bấm Phân tích lại.')
-    }
-    throw new Error('Không mở được Chrome để hỏi AI trên YouTube: ' + (err?.message || err))
+    if (isProfileLockError(err?.message)) throw new Error(CHROME_LOCK_MESSAGE)
+    throw new Error('Không mở được Chrome của bạn: ' + (err?.message || err))
   })
   return ctxPromise
 }
@@ -78,17 +81,14 @@ async function getContext(chromium) {
 async function getWorkingPage(chromium) {
   const ctx = await getContext(chromium)
   try {
-    for (const p of ctx.pages()) {
-      const u = p.url()
-      if (u === 'about:blank' || u === '') await p.close().catch(() => {})
-    }
-    const page = ctx.pages()[0] || await ctx.newPage()
+    const yt = ctx.pages().find(p => /youtube\.com\/watch/i.test(p.url() || ''))
+    const page = yt || await ctx.newPage()
     return { ctx, page }
   } catch (err) {
     if (!isClosedBrowserError(err?.message)) throw err
     forgetContext()
     const fresh = await getContext(chromium)
-    return { ctx: fresh, page: fresh.pages()[0] || await fresh.newPage() }
+    return { ctx: fresh, page: await fresh.newPage() }
   }
 }
 
