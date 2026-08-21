@@ -14,6 +14,9 @@ const SHOW_PAUSE_ALL = false
 const SHOW_AI_ANALYZE = true
 // Che do Cat: toi da 5 link/lan, va chay song song dung bang so link them vao
 const MAX_CUT_ROWS = 10
+// Tắt nút "AI trên YouTube" (playwright mở Chrome) — mong manh, rủi ro tài khoản Google.
+// Code giữ nguyên, bật lại bằng flag này khi cần thử nghiệm.
+const SHOW_YOUTUBE_ASK = false
 
 let rowKey = 1
 const newRow = (folder = '') => ({ key: rowKey++, url: '', filename: '', folder, aiText: '' })
@@ -260,11 +263,11 @@ export default function App() {
   const [promptCopied, setPromptCopied] = useState(false)
   const copyPrompt = async () => {
     try {
-      await navigator.clipboard.writeText(buildPrompt(settings?.prompt, settings?.appendFormatRules !== false))
+      await navigator.clipboard.writeText(buildPrompt(settings?.prompt, settings?.appendFormatRules !== false, settings?.language))
       setPromptCopied(true)
       setTimeout(() => setPromptCopied(false), 2500)
     } catch {
-      alert(buildPrompt(settings?.prompt, settings?.appendFormatRules !== false))
+      alert(buildPrompt(settings?.prompt, settings?.appendFormatRules !== false, settings?.language))
     }
   }
 
@@ -520,18 +523,20 @@ export default function App() {
             </button>
           ) : (
             <>
-              <div className="view-toggle" title="Phụ đề + Gemini trong app (nhanh), hoặc tự mở YouTube Hỏi AI">
-                <button
-                  className={aiSource === 'app' ? 'active' : ''}
-                  onClick={() => setAiSource('app')}
-                  disabled={hasRunning || analyzingCount > 0}
-                >AI trong app</button>
-                <button
-                  className={aiSource === 'youtube' ? 'active' : ''}
-                  onClick={() => setAiSource('youtube')}
-                  disabled={hasRunning || analyzingCount > 0}
-                >AI trên YouTube</button>
-              </div>
+              {SHOW_YOUTUBE_ASK && (
+                <div className="view-toggle" title="Phụ đề + Gemini trong app (nhanh), hoặc tự mở YouTube Hỏi AI">
+                  <button
+                    className={aiSource === 'app' ? 'active' : ''}
+                    onClick={() => setAiSource('app')}
+                    disabled={hasRunning || analyzingCount > 0}
+                  >AI trong app</button>
+                  <button
+                    className={aiSource === 'youtube' ? 'active' : ''}
+                    onClick={() => setAiSource('youtube')}
+                    disabled={hasRunning || analyzingCount > 0}
+                  >AI trên YouTube</button>
+                </div>
+              )}
               {cutUi.showAutoCut && (
                 <div className="view-toggle" title="Sau khi AI trả mốc: duyệt rồi cắt, hoặc tự cắt ngay">
                   <button
@@ -746,6 +751,9 @@ function UpdateBar() {
   )
 }
 
+// Ngôn ngữ đầu ra cho tiêu đề clip — giá trị được chèn thẳng vào prompt
+const LANGUAGES = ['Tây Ban Nha', 'Anh', 'Việt', 'Bồ Đào Nha', 'Pháp', 'Đức', 'Indonesia', 'Thái', 'Nhật', 'Hàn', 'Trung']
+
 // Danh sách dự phòng khi chưa có key / không gọi được Google
 const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-flash-latest', 'gemini-pro-latest']
 
@@ -755,6 +763,7 @@ function SettingsModal({ settings, onClose, onSaved }) {
   const [appendRules, setAppendRules] = useState(settings?.appendFormatRules !== false)
   const [modelDraft, setModelDraft] = useState(settings?.model || 'gemini-3.6-flash')
   const [speedDraft, setSpeedDraft] = useState(settings?.speedMode === 'quality' ? 'quality' : 'fast')
+  const [langDraft, setLangDraft] = useState(settings?.language || 'Tây Ban Nha')
   const [models, setModels] = useState(FALLBACK_MODELS)
   const [sample, setSample] = useState('')
   const [showFull, setShowFull] = useState(false)
@@ -773,7 +782,7 @@ function SettingsModal({ settings, onClose, onSaved }) {
       .catch(() => {})
   }, [])
 
-  const finalPrompt = buildPrompt(promptDraft, appendRules)
+  const finalPrompt = buildPrompt(promptDraft, appendRules, langDraft)
   // Chỉ cần soi prompt khi người dùng tự lo phần định dạng
   const check = appendRules ? { ok: true } : validatePrompt(promptDraft)
   const sampleResult = sample.trim() ? parseSegmentsText(sample) : null
@@ -791,6 +800,7 @@ function SettingsModal({ settings, onClose, onSaved }) {
           appendFormatRules: appendRules,
           model: modelDraft,
           speedMode: speedDraft,
+          language: langDraft,
         }),
       })
       const d = await res.json()
@@ -867,6 +877,14 @@ function SettingsModal({ settings, onClose, onSaved }) {
 
         {SHOW_AI_ANALYZE && (
           <>
+            <label className="set-label">Ngôn ngữ tiêu đề clip (Name + title_bottom)</label>
+            <select className="set-input" value={langDraft} onChange={e => setLangDraft(e.target.value)}>
+              {[langDraft, ...LANGUAGES.filter(l => l !== langDraft)].map(l => (
+                <option key={l} value={l}>tiếng {l}</option>
+              ))}
+            </select>
+            <p className="set-note">AI sẽ đặt tên video và tiêu đề từng đoạn bằng thứ tiếng này, bất kể video nói tiếng gì.</p>
+
             <label className="set-label">Tốc độ phân tích</label>
             <div className="speed-options">
               <label className="set-check">

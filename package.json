@@ -1,7 +1,7 @@
 {
   "name": "cut-youtube",
   "private": true,
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Tải video YouTube 1080p hàng loạt — đặt tên file và chọn thư mục cho từng link",
   "author": "Nguyễn Hoàng Duy",
   "type": "module",

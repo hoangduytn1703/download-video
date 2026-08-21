@@ -67,8 +67,11 @@ test('buildPrompt giữ yêu cầu người dùng và nối quy tắc định d�
   const withRules = buildPrompt(custom, true)
   assert.ok(withRules.includes(custom), 'phải giữ nguyên yêu cầu người dùng')
   assert.ok(withRules.includes('start_1'), 'phải có quy tắc định dạng')
+  // tắt quy tắc định dạng vẫn giữ chỉ định ngôn ngữ (2 mối quan tâm độc lập)
   const without = buildPrompt(custom, false)
-  assert.equal(without, custom)
+  assert.ok(without.startsWith(custom))
+  assert.match(without, /NGÔN NGỮ ĐẦU RA/)
+  assert.ok(!without.includes('start_1'))
   // prompt trống thì dùng mặc định
   assert.ok(buildPrompt('', true).includes('start_1'))
 })
@@ -88,8 +91,11 @@ test('prompt mặc định tạo ra text mà parser đọc được', () => {
   assert.equal(r.segments[0].start, '0:10')
 })
 
-test('default cut prompt requires Spanish TikTok titles and 70-150s clips', () => {
-  assert.match(DEFAULT_CUT_PROMPT, /Tây Ban Nha/i)
+test('default cut prompt is language-neutral; buildPrompt injects the chosen language', () => {
+  assert.doesNotMatch(DEFAULT_CUT_PROMPT, /Tây Ban Nha/i)
+  assert.match(buildPrompt('', true), /tiếng Tây Ban Nha/i) // mặc định
+  assert.match(buildPrompt('', true, 'Việt'), /tiếng Việt/i)
+  assert.doesNotMatch(buildPrompt('', true, 'Việt'), /tiếng Tây Ban Nha/i)
   assert.match(DEFAULT_CUT_PROMPT, /70/)
   assert.match(DEFAULT_CUT_PROMPT, /150|2 phút 30/)
   assert.match(DEFAULT_CUT_PROMPT, /intro/i)

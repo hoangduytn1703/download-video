@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { DEFAULT_CUT_PROMPT } from './default-prompt.js'
+import { languageBlock } from '../src/parse.js'
 
 // Cấu hình người dùng (API key, prompt) lưu ngoài repo — mỗi máy một file riêng
 const CONFIG_DIR = path.join(os.homedir(), '.youtube-download-tool')
@@ -121,11 +122,11 @@ export async function analyzeVideo(url, opts = {}) {
   throw lastErr
 }
 
-async function analyzeVideoOnce(url, { apiKey, prompt, model, transcript } = {}) {
+async function analyzeVideoOnce(url, { apiKey, prompt, model, transcript, language } = {}) {
   if (!apiKey) throw new Error('Chưa có Gemini API key — vào Cài đặt (⚙️) để nhập')
   const usedModel = model || DEFAULT_MODEL
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${usedModel}:generateContent`
-  const task = prompt || DEFAULT_PROMPT
+  const task = (prompt || DEFAULT_PROMPT) + languageBlock(language)
   const parts = transcript
     ? [{ text: `${task}\n\nTimestamped transcript of the video:\n${transcript}` }]
     : [{ fileData: { fileUri: url }, videoMetadata: { fps: 0.2 } }, { text: task }]

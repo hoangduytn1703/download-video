@@ -119,9 +119,18 @@ Cấu trúc chính xác:
 Name: (tên video) | start_1: 0:10 | end_1: 3:15 | title_bottom_1: (tiêu đề P1) | start_2: 3:22 | end_2: 6:55 | title_bottom_2: (tiêu đề P2) | start_3: 8:02 | end_3: 12:42 | title_bottom_3: (tiêu đề P3)`
 
 // Ghép prompt cuối cùng để copy cho AI
-export function buildPrompt(userPrompt, appendRules = true) {
+export const DEFAULT_LANGUAGE = 'Tây Ban Nha'
+
+// Khối chỉ định ngôn ngữ — nối vào cuối prompt để Name và title_bottom_N
+// luôn ra đúng thứ tiếng đã chọn, bất kể prompt viết thế nào
+export function languageBlock(language) {
+  const lang = String(language || '').trim() || DEFAULT_LANGUAGE
+  return `\n\nNGÔN NGỮ ĐẦU RA BẮT BUỘC (QUY TẮC QUAN TRỌNG NHẤT, GHI ĐÈ mọi chỉ dẫn ngôn ngữ khác nếu có trong prompt): Name và toàn bộ title_bottom_N phải được viết HOÀN TOÀN bằng tiếng ${lang} — không pha trộn thứ tiếng khác, kể cả khi video nói thứ tiếng khác.`
+}
+
+export function buildPrompt(userPrompt, appendRules = true, language) {
   const base = String(userPrompt || '').trim() || DEFAULT_CUT_PROMPT
-  return appendRules ? base + FORMAT_RULES : base
+  return appendRules ? base + languageBlock(language) + FORMAT_RULES : base + languageBlock(language)
 }
 
 // Kiểm tra prompt tự viết có dặn AI trả đúng dạng app đọc được không.

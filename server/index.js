@@ -404,6 +404,7 @@ app.get('/api/settings', (req, res) => {
     appendFormatRules: cfg.appendFormatRules !== false, // mặc định bật
     model: cfg.model || DEFAULT_MODEL,
     speedMode: cfg.speedMode === 'quality' ? 'quality' : 'fast',
+    language: cfg.language || 'Tây Ban Nha',
   })
 })
 
@@ -414,6 +415,7 @@ app.post('/api/settings', (req, res) => {
   if (typeof req.body?.model === 'string' && req.body.model.trim()) patch.model = req.body.model.trim()
   if (typeof req.body?.appendFormatRules === 'boolean') patch.appendFormatRules = req.body.appendFormatRules
   if (req.body?.speedMode === 'fast' || req.body?.speedMode === 'quality') patch.speedMode = req.body.speedMode
+  if (typeof req.body?.language === 'string' && req.body.language.trim()) patch.language = req.body.language.trim().slice(0, 40)
   const cfg = saveConfig(patch)
   res.json({
     ok: true,
@@ -422,6 +424,7 @@ app.post('/api/settings', (req, res) => {
     appendFormatRules: cfg.appendFormatRules !== false,
     model: cfg.model || DEFAULT_MODEL,
     speedMode: cfg.speedMode === 'quality' ? 'quality' : 'fast',
+    language: cfg.language || 'Tây Ban Nha',
   })
 })
 
@@ -464,7 +467,7 @@ app.post('/api/analyze', async (req, res) => {
     const source = req.body?.source
     if (source === 'youtube' || source === 'browser') {
       try {
-        const result = await analyzeViaYoutubeAsk(url, { prompt: cfg.prompt })
+        const result = await analyzeViaYoutubeAsk(url, { prompt: cfg.prompt, language: cfg.language })
         return res.json({ ok: true, ...result })
       } catch (err) {
         if ((err?.message || '') !== NO_ASK_MESSAGE) throw err
@@ -477,7 +480,7 @@ app.post('/api/analyze', async (req, res) => {
     } catch (err) {
       console.warn('[analyze] transcript failed, falling back to video:', err?.message || err)
     }
-    const base = { apiKey: cfg.geminiKey, prompt: cfg.prompt, transcript }
+    const base = { apiKey: cfg.geminiKey, prompt: cfg.prompt, transcript, language: cfg.language }
     // Chế độ Nhanh (mặc định): có phụ đề thì phân tích bằng model lite (~1-3s thay vì ~25s).
     // Lite lỗi hoặc trả kết quả rỗng thì tự chạy lại bằng model chính — không hỏng luồng.
     const useFast = transcript && cfg.speedMode !== 'quality'
