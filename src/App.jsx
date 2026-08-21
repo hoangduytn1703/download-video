@@ -760,18 +760,14 @@ const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-flash-l
 function SettingsModal({ settings, onClose, onSaved }) {
   const [keyDraft, setKeyDraft] = useState('')
   const [promptDraft, setPromptDraft] = useState(settings?.prompt || DEFAULT_CUT_PROMPT)
-  const [appendRules, setAppendRules] = useState(settings?.appendFormatRules !== false)
-  const [modelDraft, setModelDraft] = useState(settings?.model || 'gemini-3.6-flash')
-  const [speedDraft, setSpeedDraft] = useState(settings?.speedMode === 'quality' ? 'quality' : 'fast')
   const [langDraft, setLangDraft] = useState(settings?.language || 'Tây Ban Nha')
+  const [speedDraft, setSpeedDraft] = useState(settings?.speedMode === 'quality' ? 'quality' : 'fast')
+  const [modelDraft, setModelDraft] = useState(settings?.model || 'gemini-3.6-flash')
   const [models, setModels] = useState(FALLBACK_MODELS)
-  const [sample, setSample] = useState('')
-  const [showFull, setShowFull] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    if (!SHOW_AI_ANALYZE) return
     fetch(`${API}/api/models`)
       .then(r => r.json())
       .then(d => {
@@ -781,11 +777,6 @@ function SettingsModal({ settings, onClose, onSaved }) {
       })
       .catch(() => {})
   }, [])
-
-  const finalPrompt = buildPrompt(promptDraft, appendRules, langDraft)
-  // Chỉ cần soi prompt khi người dùng tự lo phần định dạng
-  const check = appendRules ? { ok: true } : validatePrompt(promptDraft)
-  const sampleResult = sample.trim() ? parseSegmentsText(sample) : null
 
   const save = async () => {
     setSaving(true)
@@ -797,7 +788,7 @@ function SettingsModal({ settings, onClose, onSaved }) {
         body: JSON.stringify({
           geminiKey: keyDraft.trim() || undefined,
           prompt: promptDraft,
-          appendFormatRules: appendRules,
+          appendFormatRules: true,
           model: modelDraft,
           speedMode: speedDraft,
           language: langDraft,
@@ -816,109 +807,58 @@ function SettingsModal({ settings, onClose, onSaved }) {
   return (
     <div className="overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="overlay-card settings">
-        <h3>⚙️ Prompt hỏi AI</h3>
-        <p className="set-note">
-          Đây là prompt mà nút <b>📋 Copy prompt cho AI</b> sẽ chép. Viết yêu cầu theo ý bạn — cách chọn đoạn, số đoạn, độ dài, giọng văn tiêu đề.
-        </p>
+        <h3>⚙️ Cài đặt</h3>
 
-        <label className="set-label">Yêu cầu của bạn</label>
+        <label className="set-label">Prompt phân tích video</label>
         <textarea
           className="set-input set-prompt"
-          rows={7}
+          rows={8}
           value={promptDraft}
           onChange={e => setPromptDraft(e.target.value)}
           placeholder={DEFAULT_CUT_PROMPT}
         />
         <button className="set-reset" onClick={() => setPromptDraft(DEFAULT_CUT_PROMPT)}>↺ Về prompt mặc định</button>
+        <p className="set-note">App tự nối quy tắc định dạng + ngôn ngữ vào cuối prompt — viết kiểu gì kết quả cũng cắt được.</p>
 
-        <label className="set-check">
-          <input type="checkbox" checked={appendRules} onChange={e => setAppendRules(e.target.checked)} />
-          <span>
-            Tự thêm quy tắc định dạng vào cuối prompt <b>(nên bật)</b>
-          </span>
-        </label>
-        <p className="set-note">
-          Bật thì app tự nối phần dặn AI trả về mốc thời gian đúng chuẩn — nhờ vậy bạn viết prompt kiểu gì cũng cắt được.
-          Tắt thì bạn phải tự dặn AI trong prompt.
-        </p>
+        <label className="set-label">Ngôn ngữ tiêu đề clip</label>
+        <select className="set-input" value={langDraft} onChange={e => setLangDraft(e.target.value)}>
+          {[langDraft, ...LANGUAGES.filter(l => l !== langDraft)].map(l => (
+            <option key={l} value={l}>tiếng {l}</option>
+          ))}
+        </select>
 
-        {!check.ok && <p className="set-error">⚠ {check.reason}</p>}
-        {check.ok && check.warn && <p className="set-warn">💡 {check.warn}</p>}
-        {appendRules && <p className="set-ok">✓ Kết quả AI sẽ luôn ở dạng app đọc được</p>}
+        <label className="set-label">Tốc độ phân tích</label>
+        <div className="speed-options">
+          <label className="set-check">
+            <input type="radio" name="speed" checked={speedDraft === 'fast'} onChange={() => setSpeedDraft('fast')} />
+            <span>⚡ <b>Nhanh</b> (~5–10 giây/video)</span>
+          </label>
+          <label className="set-check">
+            <input type="radio" name="speed" checked={speedDraft === 'quality'} onChange={() => setSpeedDraft('quality')} />
+            <span>🎯 <b>Kỹ</b> (~30 giây/video, tiêu đề hook mạnh hơn)</span>
+          </label>
+        </div>
 
-        <button className="set-reset" onClick={() => setShowFull(v => !v)}>
-          {showFull ? '▲ Ẩn prompt đầy đủ' : '▼ Xem prompt đầy đủ sẽ được copy'}
-        </button>
-        {showFull && <pre className="set-preview">{finalPrompt}</pre>}
-
-        <label className="set-label">Thử nghiệm — dán một kết quả AI vào đây để xem app có đọc được không</label>
-        <textarea
-          className="set-input set-prompt"
-          rows={3}
-          value={sample}
-          onChange={e => setSample(e.target.value)}
-          placeholder="Dán thử kết quả AI trả về..."
+        <label className="set-label">Gemini API key</label>
+        <input
+          type="password"
+          className="set-input"
+          placeholder={settings?.hasGeminiKey ? 'Đã lưu key ✓ — nhập key mới nếu muốn thay' : 'Dán API key (lấy tại aistudio.google.com/apikey)'}
+          value={keyDraft}
+          onChange={e => setKeyDraft(e.target.value)}
         />
-        {sampleResult && (
-          sampleResult.segments.length ? (
-            <div className="set-ok">
-              ✓ Đọc được <b>{sampleResult.segments.length} đoạn</b>
-              {sampleResult.name ? ` — tên: "${sampleResult.name}"` : ''}
-              <ul className="set-seglist">
-                {sampleResult.segments.map((s, i) => (
-                  <li key={i}>P{i + 1}: {s.start} → {s.end} {s.title ? `— ${s.title}` : ''}</li>
-                ))}
-              </ul>
-            </div>
-          ) : (
-            <p className="set-error">✗ Không đọc được đoạn nào từ text này</p>
-          )
-        )}
 
-        {SHOW_AI_ANALYZE && (
-          <>
-            <label className="set-label">Ngôn ngữ tiêu đề clip (Name + title_bottom)</label>
-            <select className="set-input" value={langDraft} onChange={e => setLangDraft(e.target.value)}>
-              {[langDraft, ...LANGUAGES.filter(l => l !== langDraft)].map(l => (
-                <option key={l} value={l}>tiếng {l}</option>
-              ))}
-            </select>
-            <p className="set-note">AI sẽ đặt tên video và tiêu đề từng đoạn bằng thứ tiếng này, bất kể video nói tiếng gì.</p>
-
-            <label className="set-label">Tốc độ phân tích</label>
-            <div className="speed-options">
-              <label className="set-check">
-                <input type="radio" name="speed" checked={speedDraft === 'fast'} onChange={() => setSpeedDraft('fast')} />
-                <span>⚡ <b>Nhanh</b> (~5–10 giây/video) — dùng model lite khi video có phụ đề. Tiêu đề có thể ít giật gân hơn một chút.</span>
-              </label>
-              <label className="set-check">
-                <input type="radio" name="speed" checked={speedDraft === 'quality'} onChange={() => setSpeedDraft('quality')} />
-                <span>🎯 <b>Kỹ</b> (~30 giây/video) — luôn dùng model chính, tiêu đề hook mạnh hơn.</span>
-              </label>
-            </div>
-            <p className="set-note">Video không có phụ đề thì luôn dùng model chính và mất ~45 giây (Gemini phải xem video).</p>
-
-            <label className="set-label">Gemini API key</label>
-            <input
-              type="password"
-              className="set-input"
-              placeholder={settings?.hasGeminiKey ? 'Đã lưu key ✓ — nhập key mới nếu muốn thay' : 'Dán API key (lấy tại aistudio.google.com/apikey)'}
-              value={keyDraft}
-              onChange={e => setKeyDraft(e.target.value)}
-            />
-            <label className="set-label">Model</label>
-            <select className="set-input" value={modelDraft} onChange={e => setModelDraft(e.target.value)}>
-              {models.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
-          </>
-        )}
+        <label className="set-label">Model</label>
+        <select className="set-input" value={modelDraft} onChange={e => setModelDraft(e.target.value)}>
+          {models.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
 
         {error && <p className="set-error">{error}</p>}
 
         <div className="settings-actions">
           <button onClick={onClose}>Đóng</button>
           <button className="primary" onClick={save} disabled={saving}>
-            {saving ? 'Đang lưu...' : 'Lưu prompt'}
+            {saving ? 'Đang lưu...' : 'Lưu cài đặt'}
           </button>
         </div>
       </div>
