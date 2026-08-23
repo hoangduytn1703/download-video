@@ -119,6 +119,25 @@ Cấu trúc chính xác:
 Name: (tên video) | start_1: 0:10 | end_1: 3:15 | title_bottom_1: (tiêu đề P1) | start_2: 3:22 | end_2: 6:55 | title_bottom_2: (tiêu đề P2) | start_3: 8:02 | end_3: 12:42 | title_bottom_3: (tiêu đề P3)`
 
 // Ghép prompt cuối cùng để copy cho AI
+// Xuất kết quả phân tích thành đúng chuỗi pipe của team:
+// Name: X | start_1: m:ss | end_1: m:ss | title_bottom_1: Y | ...
+export function segmentsToPipeText(name, segments) {
+  const toText = v => {
+    if (typeof v !== 'number') return String(v || '').trim()
+    const s = Math.max(0, Math.round(v))
+    const h = Math.floor(s / 3600)
+    const m = Math.floor((s % 3600) / 60)
+    const pad = n => String(n).padStart(2, '0')
+    return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`
+  }
+  const parts = [`Name: ${String(name || '').trim() || 'Video'}`]
+  ;(segments || []).forEach((seg, i) => {
+    const n = i + 1
+    parts.push(`start_${n}: ${toText(seg.start)}`, `end_${n}: ${toText(seg.end)}`, `title_bottom_${n}: ${String(seg.title || '').trim()}`)
+  })
+  return parts.join(' | ')
+}
+
 export const DEFAULT_LANGUAGE = 'Tây Ban Nha'
 
 // Khối chỉ định ngôn ngữ — nối vào cuối prompt để Name và title_bottom_N

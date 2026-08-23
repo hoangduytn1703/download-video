@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource } from './parse.js'
+import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText } from './parse.js'
 
 test('đọc đúng chuỗi pipe thật của team (từ Gemini)', () => {
   const text =
@@ -143,4 +143,20 @@ test('app AI source shows analyze, hides paste; YouTube source keeps paste as ba
   assert.equal(youtube.showPaste, true)
   assert.equal(youtube.showCopyPrompt, true)
   assert.equal(youtube.showAutoCut, true)
+})
+
+test('segmentsToPipeText xuất đúng format team và parser đọc lại được (khứ hồi)', () => {
+
+  const text = segmentsToPipeText('El destino oscuro', [
+    { start: '0:33', end: '2:22', title: 'El cazador busca a su hija' },
+    { start: 312, end: 448, title: 'Un cementerio maldito' },
+  ])
+  assert.equal(
+    text,
+    'Name: El destino oscuro | start_1: 0:33 | end_1: 2:22 | title_bottom_1: El cazador busca a su hija | start_2: 5:12 | end_2: 7:28 | title_bottom_2: Un cementerio maldito'
+  )
+  const back = parseSegmentsText(text)
+  assert.equal(back.name, 'El destino oscuro')
+  assert.equal(back.segments.length, 2)
+  assert.deepEqual(back.segments[1], { start: '5:12', end: '7:28', title: 'Un cementerio maldito' })
 })

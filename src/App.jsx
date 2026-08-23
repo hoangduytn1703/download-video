@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { getApiBase, runtime } from './api.js'
 import { isYouTubeUrl } from './youtube.js'
-import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource } from './parse.js'
+import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText } from './parse.js'
 
 export { isYouTubeUrl }
 
@@ -31,7 +31,7 @@ const secToText = sec => {
 }
 
 export default function App() {
-  const [mode, setMode] = useState('download') // 'download' | 'cut'
+  const [mode, setMode] = useState('analyze') // 'analyze' | 'download' | 'cut'
   const [defaultFolder, setDefaultFolder] = useState('')
   const [rows, setRows] = useState([newRow()])
   const [jobs, setJobs] = useState([])
@@ -47,6 +47,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [autoCut, setAutoCut] = useState(false)
   const [aiSource, setAiSource] = useState('app') // 'app' | 'youtube'
+  const [copiedKey, setCopiedKey] = useState(null) // key dòng vừa copy kết quả, hoặc 'ALL'
   const pollRef = useRef(null)
 
   const refresh = async () => {
@@ -110,7 +111,7 @@ export default function App() {
     })
   }
 
-  const rowLimit = mode === 'cut' ? MAX_CUT_ROWS : Infinity
+  const rowLimit = mode === 'download' ? Infinity : MAX_CUT_ROWS
   const atRowLimit = rows.length >= rowLimit
 
   const addRow = () => setRows(rs => (rs.length >= rowLimit ? rs : [...rs, newRow(defaultFolder)]))
@@ -194,6 +195,16 @@ export default function App() {
     await refresh()
   }
 
+  const copyResult = async (key, text) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedKey(key)
+      setTimeout(() => setCopiedKey(k => (k === key ? null : k)), 2000)
+    } catch {
+      alert(text)
+    }
+  }
+
   const analyzeAll = async () => {
     if (settings && !settings.hasGeminiKey) {
       setSettingsOpen(true)
@@ -201,7 +212,7 @@ export default function App() {
     }
     const targets = rows.filter(r => isYouTubeUrl(r.url) && analysis[r.key]?.status !== 'analyzing')
     if (!targets.length) return
-    const cutImmediately = autoCut
+    const cutImmediately = autoCut && mode === 'cut'
     const pending = [...targets]
     const parallel = aiSource === 'youtube' ? 1 : Math.min(5, pending.length)
     const workers = Array.from({ length: parallel }, async () => {
@@ -365,13 +376,16 @@ export default function App() {
       <header className="hero">
         <h1><span className="logo">▶</span>Youtube<span className="grad">Download Tool</span></h1>
         <p className="hint">
-          {mode === 'download'
-            ? 'Dán link → đặt tên → chọn folder → nhấn tải, xong! 🚀'
-            : cutUi.showPaste
-              ? 'Đóng hết Chrome → Phân tích: app mở Chrome đã login của bạn. Giữ cửa sổ đó, mở thêm tab app nếu cần.'
-              : 'Dán link → Phân tích AI (phụ đề, nhanh) → duyệt/sửa → Cắt'}
+          {mode === 'analyze'
+            ? 'Dán link → Phân tích → nhận text kết quả cắt (Name + mốc thời gian) → Copy đem đi đâu tùy bạn 📋'
+            : mode === 'download'
+              ? 'Dán link → đặt tên → chọn folder → nhấn tải, xong! 🚀'
+              : cutUi.showPaste
+                ? 'Đóng hết Chrome → Phân tích: app mở Chrome đã login của bạn. Giữ cửa sổ đó, mở thêm tab app nếu cần.'
+                : 'Dán link → Phân tích AI (phụ đề, nhanh) → duyệt/sửa → Cắt'}
         </p>
         <div className="mode-tabs">
+          <button className={mode === 'analyze' ? 'active' : ''} onClick={() => setMode('analyze')}>🔍 Phân tích</button>
           <button className={mode === 'download' ? 'active' : ''} onClick={() => setMode('download')}>⬇ Tải video</button>
           <button className={mode === 'cut' ? 'active' : ''} onClick={() => setMode('cut')}>✂️ Cắt clip</button>
           {(mode === 'cut' || SHOW_AI_ANALYZE) && (
@@ -460,21 +474,27 @@ export default function App() {
                 onChange={e => updateRow(r.key, { url: e.target.value })}
                 disabled={hasRunning}
               />
-              <input
-                className="filename"
-                placeholder={mode === 'cut' ? 'Tên clip (trống = AI đặt)' : 'Tên file (tùy chọn)'}
-                value={r.filename}
-                onChange={e => updateRow(r.key, { filename: e.target.value })}
-                disabled={hasRunning}
-              />
-              <input
-                className="folder"
-                placeholder="Thư mục tải về"
-                value={r.folder}
-                onChange={e => updateRow(r.key, { folder: e.target.value })}
-                disabled={hasRunning}
-              />
-              <button className="btn-icon" title="Chọn thư mục" onClick={() => pickFolder(r.key)} disabled={hasRunning}>📁</button>
+              {mode !== 'analyze' && (
+                <input
+                  className="filename"
+                  placeholder={mode === 'cut' ? 'Tên clip (trống = AI đặt)' : 'Tên file (tùy chọn)'}
+                  value={r.filename}
+                  onChange={e => updateRow(r.key, { filename: e.target.value })}
+                  disabled={hasRunning}
+                />
+              )}
+              {mode !== 'analyze' && (
+                <input
+                  className="folder"
+                  placeholder="Thư mục tải về"
+                  value={r.folder}
+                  onChange={e => updateRow(r.key, { folder: e.target.value })}
+                  disabled={hasRunning}
+                />
+              )}
+              {mode !== 'analyze' && (
+                <button className="btn-icon" title="Chọn thư mục" onClick={() => pickFolder(r.key)} disabled={hasRunning}>📁</button>
+              )}
               <button
                 className="btn-icon"
                 title="Xóa dòng"
@@ -517,7 +537,14 @@ export default function App() {
           {mode === 'cut' && (
             <span className="row-count">{rows.length}/{MAX_CUT_ROWS} link — cắt song song cùng lúc</span>
           )}
-          {mode === 'download' ? (
+          {mode === 'analyze' && (
+            <span className="row-count">{rows.length}/{MAX_CUT_ROWS} link — phân tích song song</span>
+          )}
+          {mode === 'analyze' ? (
+            <button className="primary" onClick={analyzeAll} disabled={validCount === 0 || analyzingCount > 0}>
+              {analyzingCount > 0 ? `🔍 Đang phân tích ${analyzingCount} video...` : `🔍 Phân tích (${validCount})`}
+            </button>
+          ) : mode === 'download' ? (
             <button className="primary" onClick={download} disabled={submitting || hasRunning || validCount === 0}>
               ⬇ Tải xuống ({validCount})
             </button>
@@ -568,6 +595,46 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {mode === 'analyze' && rows.some(r => analysis[r.key]) && (
+        <div className="analysis">
+          {rows.filter(r => analysis[r.key]?.status === 'ready').length > 1 && (
+            <div className="results-tools">
+              <button
+                onClick={() => copyResult('ALL',
+                  rows
+                    .filter(r => analysis[r.key]?.status === 'ready')
+                    .map(r => segmentsToPipeText(analysis[r.key].name, analysis[r.key].segments))
+                    .join('\n\n')
+                )}
+              >
+                {copiedKey === 'ALL' ? '✓ Đã copy tất cả!' : `📋 Copy tất cả (${rows.filter(r => analysis[r.key]?.status === 'ready').length})`}
+              </button>
+            </div>
+          )}
+          {rows.filter(r => analysis[r.key]).map(r => {
+            const a = analysis[r.key]
+            const pipe = a.status === 'ready' ? segmentsToPipeText(a.name, a.segments) : ''
+            return (
+              <div className={`ana ana-${a.status}`} key={r.key}>
+                <div className="ana-head">
+                  <span className="ana-name" title={r.url}>{a.name || r.url}</span>
+                  {a.status === 'analyzing' && <span className="ana-status">🔍 Đang phân tích, thường 5–10 giây...</span>}
+                  {a.status === 'error' && <span className="ana-status err">❌ {a.error}</span>}
+                  {a.status === 'ready' && <span className="ana-status ok">✓ {a.segments.length} đoạn</span>}
+                  {a.status === 'ready' && (
+                    <button className="btn-copy-result" onClick={() => copyResult(r.key, pipe)}>
+                      {copiedKey === r.key ? '✓ Đã copy!' : '📋 Copy kết quả'}
+                    </button>
+                  )}
+                </div>
+                {a.status === 'analyzing' && <div className="bar"><div className="bar-fill ana-pulse" style={{ width: '100%' }} /></div>}
+                {a.status === 'ready' && <pre className="pipe-text">{pipe}</pre>}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {mode === 'cut' && rows.some(r => analysis[r.key]) && (
         <div className="analysis">
