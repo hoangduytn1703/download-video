@@ -34,7 +34,8 @@ export default function App() {
   const [mode, setMode] = useState('analyze') // 'analyze' | 'cut'
   const [defaultFolder, setDefaultFolder] = useState('')
   // Danh sách link DÙNG CHUNG cho tab Phân tích và tab Cắt — dán một lần, hai tab cùng thấy.
-  // Kết quả phân tích cũng dùng chung, nhưng CẮT chỉ chạy khi bấm nút bên tab Cắt.
+  // Kết quả phân tích cũng dùng chung, nhưng tab Cắt KHÔNG tự hiện gì cả (cutShown) —
+  // chỉ hiện/chạy khi bấm nút Phân tích hoặc Cắt bên tab đó.
   const [rows, setRows] = useState([newRow()])
   const [jobs, setJobs] = useState([])
   const [view, setView] = useState('list')
@@ -50,6 +51,10 @@ export default function App() {
   // 'custom' = phân tích lại bằng prompt nhập tay, 'settings' = phân tích bằng prompt trong Cài đặt
   const [cutSource, setCutSource] = useState('analysis')
   const [customPrompt, setCustomPrompt] = useState('')
+  // Tab Cắt KHÔNG tự bung kết quả theo tab 1 — chỉ hiện khi bấm nút Phân tích bên tab này
+  const [cutShown, setCutShown] = useState(false)
+  // Đếm ngược nghỉ 5 giây sau mỗi lượt phân tích — chống bấm dồn dập tốn token
+  const [cooldown, setCooldown] = useState(0)
   const [copiedKey, setCopiedKey] = useState(null) // key dòng vừa copy kết quả, hoặc 'ALL'
   const pollRef = useRef(null)
 
@@ -90,6 +95,13 @@ export default function App() {
       pollRef.current = null
     }
   }, [hasRunning])
+
+  // Tick đếm ngược cooldown 5s sau mỗi lượt phân tích
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const t = setTimeout(() => setCooldown(c => c - 1), 1000)
+    return () => clearTimeout(t)
+  }, [cooldown])
 
   // Cảnh báo khi reload / đóng tab lúc đang tải dở
   useEffect(() => {
@@ -237,6 +249,7 @@ export default function App() {
     const targets = rows.filter(r => isYouTubeUrl(r.url) && !dupKeys.has(r.key) && analysis[r.key]?.status !== 'analyzing')
     if (!targets.length) return
     await runAnalysisPool(targets, { onReady: null, promptOverride: null })
+    setCooldown(5)
   }
 
   // Chạy phân tích song song (tối đa 5). onReady được gọi từng link khi xong —
@@ -297,6 +310,30 @@ export default function App() {
 
   const readyRows = rows.filter(r => analysis[r.key]?.status === 'ready' && analysis[r.key].segments.length > 0 && !dupKeys.has(r.key))
 
+  // Nút Phân tích bên tab Cắt — chạy theo option đang chọn, CHỈ phân tích + hiện kết quả
+  // để xem/sửa (chưa cắt). Với option "dùng kết quả đã phân tích" thì chỉ hiển thị lại,
+  // không gọi AI nên không tốn token.
+  const analyzeForCut = async () => {
+    if (cutSource === 'analysis') {
+      setCutShown(true)
+      return
+    }
+    if (settings && !settings.hasGeminiKey) {
+      setSettingsOpen(true)
+      return
+    }
+    const promptOverride = cutSource === 'custom' ? customPrompt.trim() : null
+    if (cutSource === 'custom' && !promptOverride) {
+      alert('Bạn đang chọn "Prompt mới" nhưng chưa nhập prompt.')
+      return
+    }
+    const targets = usableRows.filter(r => analysis[r.key]?.status !== 'analyzing')
+    if (!targets.length) return
+    setCutShown(true)
+    await runAnalysisPool(targets, { promptOverride, onReady: null })
+    setCooldown(5)
+  }
+
   const cutAll = async () => {
     setSubmitting(true)
     try {
@@ -319,6 +356,7 @@ export default function App() {
         alert('Bạn đang chọn "Prompt mới" nhưng chưa nhập prompt.')
         return
       }
+      setCutShown(true)
       await runAnalysisPool(targets, {
         promptOverride,
         onReady: async (r, ready) => {
@@ -326,6 +364,7 @@ export default function App() {
           if (items.length) await enqueueCutJobs(items)
         },
       })
+      setCooldown(5)
     } finally {
       setSubmitting(false)
     }
@@ -389,7 +428,7 @@ export default function App() {
         <p className="hint">
           {mode === 'analyze'
             ? 'Dán link → Phân tích → nhận text kết quả cắt → Copy / Lưu .txt. Muốn cắt thì qua tab Cắt clip 📋'
-            : 'Link dùng chung với tab Phân tích. Chọn nguồn mốc cắt → bấm Cắt → clip 1080p về folder ✂️'}
+            : 'Link dùng chung với tab Phân tích. Chọn nguồn mốc cắt → bấm Phân tích để xem/sửa mốc, hoặc Cắt để chạy luôn ✂️'}
         </p>
         <div className="mode-tabs">
           <button className={mode === 'analyze' ? 'active' : ''} onClick={() => setMode('analyze')}>🔍 Phân tích</button>
@@ -526,8 +565,12 @@ export default function App() {
           <button onClick={pasteLinks} disabled={hasRunning}>📋 Dán nhiều link</button>
           <span className="row-count">{rows.length}/{rowLimit} link</span>
           {mode === 'analyze' && (
-            <button className="primary" onClick={analyzeAll} disabled={validCount === 0 || analyzingCount > 0}>
-              {analyzingCount > 0 ? `🔍 Đang phân tích ${analyzingCount} video...` : `🔍 Phân tích (${validCount})`}
+            <button className="primary" onClick={analyzeAll} disabled={validCount === 0 || analyzingCount > 0 || cooldown > 0}>
+              {analyzingCount > 0
+                ? `🔍 Đang phân tích ${analyzingCount} video...`
+                : cooldown > 0
+                ? `⏳ Nghỉ ${cooldown}s...`
+                : `🔍 Phân tích (${validCount})`}
             </button>
           )}
           {mode === 'cut' && (
@@ -538,12 +581,27 @@ export default function App() {
                 title="Tải nguyên video (bản full 1080p, không cắt) của tất cả link về folder"
               >⬇ Tải tất cả ({validCount})</button>
               <button
-                className="primary cut"
-                onClick={cutAll}
-                disabled={submitting || hasRunning || analyzingCount > 0 || (cutSource === 'analysis' ? readyRows.length === 0 : validCount === 0)}
+                onClick={analyzeForCut}
+                disabled={analyzingCount > 0 || cooldown > 0 || (cutSource === 'analysis' ? readyRows.length === 0 : validCount === 0)}
+                title={cutSource === 'analysis'
+                  ? 'Hiện kết quả đã phân tích ra để xem/sửa — không tốn token'
+                  : 'Phân tích theo lựa chọn bên dưới để xem/sửa mốc cắt (chưa cắt)'}
               >
                 {analyzingCount > 0
                   ? `🔍 Đang phân tích ${analyzingCount}...`
+                  : cooldown > 0
+                  ? `⏳ Nghỉ ${cooldown}s...`
+                  : `🔍 Phân tích (${cutSource === 'analysis' ? readyRows.length : validCount})`}
+              </button>
+              <button
+                className="primary cut"
+                onClick={cutAll}
+                disabled={submitting || hasRunning || analyzingCount > 0 || (cutSource === 'analysis' ? readyRows.length === 0 : validCount === 0 || cooldown > 0)}
+              >
+                {analyzingCount > 0
+                  ? `✂️ Chờ phân tích xong...`
+                  : cutSource !== 'analysis' && cooldown > 0
+                  ? `⏳ Nghỉ ${cooldown}s...`
                   : `✂️ Cắt (${cutSource === 'analysis' ? readyRows.length : validCount})`}
               </button>
             </>
@@ -632,7 +690,7 @@ export default function App() {
         </div>
       )}
 
-      {mode === 'cut' && rows.some(r => analysis[r.key]) && (
+      {mode === 'cut' && cutShown && rows.some(r => analysis[r.key]) && (
         <div className="analysis">
           {rows.filter(r => analysis[r.key]).map(r => {
             const a = analysis[r.key]
