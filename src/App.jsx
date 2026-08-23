@@ -134,13 +134,17 @@ export default function App() {
   const usableRows = rows.filter(r => isYouTubeUrl(r.url) && !dupKeys.has(r.key))
   const validCount = usableRows.length
 
-  const removeRow = key => {
-    setRows(rs => rs.filter(r => r.key !== key))
+  // Xóa kết quả phân tích của một dòng — link vẫn giữ nguyên trong danh sách
+  const clearAnalysis = key =>
     setAnalysis(a => {
       const next = { ...a }
       delete next[key]
       return next
     })
+
+  const removeRow = key => {
+    setRows(rs => rs.filter(r => r.key !== key))
+    clearAnalysis(key)
   }
 
   const rowLimit = MAX_ANALYZE_ROWS // danh sách link dùng chung 2 tab
@@ -681,6 +685,9 @@ export default function App() {
                       </button>
                     </>
                   )}
+                  {a.status !== 'analyzing' && (
+                    <button className="btn-icon" title="Xóa kết quả này (link vẫn giữ trong danh sách)" onClick={() => clearAnalysis(r.key)}>✕</button>
+                  )}
                 </div>
                 {a.status === 'analyzing' && <div className="bar"><div className="bar-fill ana-pulse" style={{ width: '100%' }} /></div>}
                 {a.status === 'ready' && <pre className="pipe-text">{pipe}</pre>}
@@ -708,6 +715,9 @@ export default function App() {
                       onClick={() => downloadFull(rows.filter(x => x.key === r.key))}
                       disabled={hasRunning}
                     >⬇ Tải video này</button>
+                  )}
+                  {a.status !== 'analyzing' && (
+                    <button className="btn-icon" title="Xóa kết quả này (link vẫn giữ trong danh sách)" onClick={() => clearAnalysis(r.key)}>✕</button>
                   )}
                 </div>
                 {a.status === 'analyzing' && <div className="bar"><div className="bar-fill ana-pulse" style={{ width: '100%' }} /></div>}
