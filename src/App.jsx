@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getApiBase, runtime } from './api.js'
-import { isYouTubeUrl } from './youtube.js'
+import { isYouTubeUrl, parseVideoId } from './youtube.js'
 import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText } from './parse.js'
 
 export { isYouTubeUrl }
@@ -12,8 +12,10 @@ const API = getApiBase(runtime())
 const SHOW_PAUSE_ALL = false
 // Phase 2: Gemini API analyze in-app (costs quota at volume).
 const SHOW_AI_ANALYZE = true
-// Che do Cat: toi da 5 link/lan, va chay song song dung bang so link them vao
+// Che do Cat: toi da 10 link/lan, chay song song dung bang so link them vao
 const MAX_CUT_ROWS = 10
+// Tab Phan tich chi tra text (khong tai/khong cat) nen cho nhieu hon
+const MAX_ANALYZE_ROWS = 20
 // Tắt nút "AI trên YouTube" (playwright mở Chrome) — mong manh, rủi ro tài khoản Google.
 // Code giữ nguyên, bật lại bằng flag này khi cần thử nghiệm.
 const SHOW_YOUTUBE_ASK = false
@@ -30,10 +32,18 @@ const secToText = sec => {
   return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`
 }
 
+// 3 tab hoàn toàn KHÔNG chia sẻ link/kết quả — phân tích ở tab Phân tích
+// không được tự lan sang tab Cắt clip và cắt tốn token oan. Mỗi tab giữ
+// rows/analysis riêng; qua lại tab chỉ đổi cái đang xem, không đụng dữ liệu tab khác.
+const MODES = ['analyze', 'download', 'cut']
+
 export default function App() {
   const [mode, setMode] = useState('analyze') // 'analyze' | 'download' | 'cut'
   const [defaultFolder, setDefaultFolder] = useState('')
-  const [rows, setRows] = useState([newRow()])
+  const [rowsByMode, setRowsByMode] = useState(() => Object.fromEntries(MODES.map(m => [m, [newRow()]])))
+  const rows = rowsByMode[mode]
+  const setRows = updater =>
+    setRowsByMode(prev => ({ ...prev, [mode]: typeof updater === 'function' ? updater(prev[mode]) : updater }))
   const [jobs, setJobs] = useState([])
   const [concurrency, setConcurrency] = useState(3)
   const [view, setView] = useState('list')
@@ -41,8 +51,11 @@ export default function App() {
   const [paused, setPaused] = useState(false)
   // null = bình thường | 'running' = đang cập nhật (khóa màn hình) | {ok, message} = kết quả
   const [upd, setUpd] = useState(null)
-  // key dòng -> { status: 'analyzing' | 'ready' | 'error', name, segments, error }
-  const [analysis, setAnalysis] = useState({})
+  // key dòng -> { status: 'analyzing' | 'ready' | 'error', name, segments, error } — riêng theo tab
+  const [analysisByMode, setAnalysisByMode] = useState(() => Object.fromEntries(MODES.map(m => [m, {}])))
+  const analysis = analysisByMode[mode]
+  const setAnalysis = updater =>
+    setAnalysisByMode(prev => ({ ...prev, [mode]: typeof updater === 'function' ? updater(prev[mode]) : updater }))
   const [settings, setSettings] = useState(null) // { hasGeminiKey, prompt, model }
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [autoCut, setAutoCut] = useState(false)
@@ -62,7 +75,9 @@ export default function App() {
       .then(r => r.json())
       .then(d => {
         setDefaultFolder(d.folder)
-        setRows(rs => rs.map(r => (r.folder ? r : { ...r, folder: d.folder })))
+        setRowsByMode(prev =>
+          Object.fromEntries(MODES.map(m => [m, prev[m].map(r => (r.folder ? r : { ...r, folder: d.folder }))]))
+        )
       })
     fetch(`${API}/api/settings`)
       .then(r => r.json())
@@ -111,7 +126,7 @@ export default function App() {
     })
   }
 
-  const rowLimit = mode === 'download' ? Infinity : MAX_CUT_ROWS
+  const rowLimit = mode === 'download' ? Infinity : mode === 'analyze' ? MAX_ANALYZE_ROWS : MAX_CUT_ROWS
   const atRowLimit = rows.length >= rowLimit
 
   const addRow = () => setRows(rs => (rs.length >= rowLimit ? rs : [...rs, newRow(defaultFolder)]))
@@ -120,7 +135,14 @@ export default function App() {
     try {
       const text = await navigator.clipboard.readText()
       const found = text.split(/[\s,]+/).filter(s => /^https?:\/\//.test(s))
-      const urls = found.filter(isYouTubeUrl)
+      const seenIds = new Set(rows.map(r => parseVideoId(r.url)).filter(Boolean))
+      const urls = []
+      for (const u of found.filter(isYouTubeUrl)) {
+        const id = parseVideoId(u)
+        if (!id || seenIds.has(id)) continue
+        seenIds.add(id)
+        urls.push(u)
+      }
       if (!urls.length) {
         if (found.length) alert('Clipboard toàn link lạ — chỉ nhận link YouTube thôi nha!')
         return
@@ -134,7 +156,7 @@ export default function App() {
         }
         while (i < urls.length && filled.length < rowLimit) filled.push({ ...newRow(defaultFolder), url: urls[i++] })
         if (i < urls.length) {
-          alert(`Chế độ Cắt chỉ nhận tối đa ${MAX_CUT_ROWS} link mỗi lần — đã lấy ${filled.length} link đầu.`)
+          alert(`Tab này nhận tối đa ${rowLimit} link mỗi lần — đã lấy ${filled.length} link đầu.`)
         }
         return [...filled]
       })
@@ -149,7 +171,7 @@ export default function App() {
   }
 
   const download = async () => {
-    const items = rows.filter(r => isYouTubeUrl(r.url))
+    const items = rows.filter(r => isYouTubeUrl(r.url) && !dupKeys.has(r.key))
     if (!items.length) return
     setSubmitting(true)
     try {
@@ -195,6 +217,24 @@ export default function App() {
     await refresh()
   }
 
+  // Đem 1 kết quả từ tab Phân tích sang tab Cắt clip — người dùng chủ động chọn cắt,
+  // không tự động cắt ngầm khi chỉ mới phân tích. Không tốn thêm token (dùng lại kết quả).
+  const sendToCutTab = (row, entry) => {
+    const cutRow = { ...newRow(defaultFolder), url: row.url, filename: entry.name || '' }
+    setRowsByMode(prev => {
+      // link đã có bên tab Cắt thì thay kết quả cho dòng đó, không thêm trùng
+      const existing = prev.cut.find(r => r.url.trim() === row.url.trim())
+      if (existing) {
+        cutRow.key = existing.key
+        return { ...prev, cut: prev.cut.map(r => (r.key === existing.key ? { ...r, filename: entry.name || r.filename } : r)) }
+      }
+      const kept = prev.cut.filter(r => r.url.trim() || r.filename.trim())
+      return { ...prev, cut: [...kept, cutRow] }
+    })
+    setAnalysisByMode(prev => ({ ...prev, cut: { ...prev.cut, [cutRow.key]: { ...entry, status: 'ready' } } }))
+    setMode('cut')
+  }
+
   const copyResult = async (key, text) => {
     try {
       await navigator.clipboard.writeText(text)
@@ -210,7 +250,7 @@ export default function App() {
       setSettingsOpen(true)
       return
     }
-    const targets = rows.filter(r => isYouTubeUrl(r.url) && analysis[r.key]?.status !== 'analyzing')
+    const targets = rows.filter(r => isYouTubeUrl(r.url) && !dupKeys.has(r.key) && analysis[r.key]?.status !== 'analyzing')
     if (!targets.length) return
     const cutImmediately = autoCut && mode === 'cut'
     const pending = [...targets]
@@ -304,7 +344,7 @@ export default function App() {
       return { ...a, [key]: { ...entry, segments: [...entry.segments, { start: '0:00', end: '3:00', title: '' }] } }
     })
 
-  const readyRows = rows.filter(r => analysis[r.key]?.status === 'ready' && analysis[r.key].segments.length > 0)
+  const readyRows = rows.filter(r => analysis[r.key]?.status === 'ready' && analysis[r.key].segments.length > 0 && !dupKeys.has(r.key))
 
   const cutAll = async () => {
     if (!readyRows.length) return
@@ -367,7 +407,22 @@ export default function App() {
     }, 1500)
   }
 
-  const validCount = rows.filter(r => isYouTubeUrl(r.url)).length
+  // Link trùng nhau (so theo video id nên youtu.be/X và watch?v=X vẫn bắt được):
+  // dòng sau bị đánh dấu trùng và loại khỏi mọi hành động — không phân tích 2 lần tốn token
+  const dupKeys = (() => {
+    const seen = new Set()
+    const dups = new Set()
+    for (const r of rows) {
+      const id = parseVideoId(r.url)
+      if (!id) continue
+      if (seen.has(id)) dups.add(r.key)
+      else seen.add(id)
+    }
+    return dups
+  })()
+
+  const usableRows = rows.filter(r => isYouTubeUrl(r.url) && !dupKeys.has(r.key))
+  const validCount = usableRows.length
   const analyzingCount = rows.filter(r => analysis[r.key]?.status === 'analyzing').length
   const cutUi = cutUiForSource(aiSource)
 
@@ -463,12 +518,13 @@ export default function App() {
         <div className="rows">
           {rows.map((r, i) => {
             const urlInvalid = r.url.trim() !== '' && !isYouTubeUrl(r.url)
+            const urlDup = dupKeys.has(r.key)
             return (
             <div className="row-wrap" key={r.key}>
             <div className="row">
               <span className="row-num">{i + 1}</span>
               <input
-                className={`url${urlInvalid ? ' invalid' : ''}`}
+                className={`url${urlInvalid || urlDup ? ' invalid' : ''}`}
                 placeholder="https://www.youtube.com/watch?v=..."
                 value={r.url}
                 onChange={e => updateRow(r.key, { url: e.target.value })}
@@ -505,6 +561,9 @@ export default function App() {
             {urlInvalid && (
               <div className="row-error">⚠ Link không hợp lệ — chỉ nhận link YouTube (youtube.com / youtu.be) thôi nha</div>
             )}
+            {urlDup && (
+              <div className="row-error">⚠ Link này trùng với một dòng phía trên — sẽ được bỏ qua để không phân tích 2 lần</div>
+            )}
             {mode === 'cut' && cutUi.showPaste && (
               <textarea
                 className="ai-paste"
@@ -538,7 +597,7 @@ export default function App() {
             <span className="row-count">{rows.length}/{MAX_CUT_ROWS} link — cắt song song cùng lúc</span>
           )}
           {mode === 'analyze' && (
-            <span className="row-count">{rows.length}/{MAX_CUT_ROWS} link — phân tích song song</span>
+            <span className="row-count">{rows.length}/{MAX_ANALYZE_ROWS} link — phân tích song song</span>
           )}
           {mode === 'analyze' ? (
             <button className="primary" onClick={analyzeAll} disabled={validCount === 0 || analyzingCount > 0}>
@@ -623,9 +682,12 @@ export default function App() {
                   {a.status === 'error' && <span className="ana-status err">❌ {a.error}</span>}
                   {a.status === 'ready' && <span className="ana-status ok">✓ {a.segments.length} đoạn</span>}
                   {a.status === 'ready' && (
-                    <button className="btn-copy-result" onClick={() => copyResult(r.key, pipe)}>
-                      {copiedKey === r.key ? '✓ Đã copy!' : '📋 Copy kết quả'}
-                    </button>
+                    <>
+                      <button className="btn-icon" title="Đem link + kết quả này sang tab Cắt clip (không tốn thêm token)" onClick={() => sendToCutTab(r, a)}>✂️</button>
+                      <button className="btn-copy-result" onClick={() => copyResult(r.key, pipe)}>
+                        {copiedKey === r.key ? '✓ Đã copy!' : '📋 Copy kết quả'}
+                      </button>
+                    </>
                   )}
                 </div>
                 {a.status === 'analyzing' && <div className="bar"><div className="bar-fill ana-pulse" style={{ width: '100%' }} /></div>}
