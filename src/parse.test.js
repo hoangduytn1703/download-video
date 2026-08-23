@@ -160,3 +160,30 @@ test('segmentsToPipeText xuất đúng format team và parser đọc lại đư�
   assert.equal(back.segments.length, 2)
   assert.deepEqual(back.segments[1], { start: '5:12', end: '7:28', title: 'Un cementerio maldito' })
 })
+
+test('sửa kết quả sau khi phân tích: text pipe copy ra đổi theo (tên, mốc, tiêu đề, bỏ đoạn)', () => {
+  // đúng như trên UI: người dùng sửa tên video / mốc thời gian / tiêu đề rồi bỏ 1 đoạn
+  const goc = [
+    { start: '0:30', end: '2:32', title: 'La verdad sobre el dragón' },
+    { start: '2:32', end: '4:43', title: 'Un sacrificio de amor' },
+    { start: '4:43', end: '7:00', title: 'La guerra inminente' },
+  ]
+  const daSua = goc
+    .filter((_, i) => i !== 1) // bấm ✕ bỏ đoạn P2
+    .map((s, i) => (i === 0 ? { ...s, start: '0:45', title: 'El secreto del dragón' } : s))
+  const text = segmentsToPipeText('Sangre y destino', daSua)
+  assert.equal(
+    text,
+    'Name: Sangre y destino | start_1: 0:45 | end_1: 2:32 | title_bottom_1: El secreto del dragón | start_2: 4:43 | end_2: 7:00 | title_bottom_2: La guerra inminente'
+  )
+  // và mốc đã sửa phải cắt đúng chỗ mới, không dùng lại mốc cũ
+  const items = jobsToEnqueueAfterAnalyze(true, { url: 'https://youtu.be/abc', folder: 'D:/out', filename: '' }, {
+    status: 'ready',
+    name: 'Sangre y destino',
+    segments: daSua,
+  })
+  assert.equal(items.length, 1)
+  assert.equal(items[0].segments.length, 2)
+  assert.equal(items[0].segments[0].start, '0:45')
+  assert.equal(items[0].segments[0].title, 'El secreto del dragón')
+})

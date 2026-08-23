@@ -13,7 +13,7 @@ const SHOW_PAUSE_ALL = false
 // Phase 2: Gemini API analyze in-app (costs quota at volume).
 const SHOW_AI_ANALYZE = true
 // Tab Phan tich chi tra text (khong tai/khong cat) nen cho nhieu hon
-const MAX_ANALYZE_ROWS = 20
+const MAX_ANALYZE_ROWS = 40
 // Tắt nút "AI trên YouTube" (playwright mở Chrome) — mong manh, rủi ro tài khoản Google.
 // Code giữ nguyên, bật lại bằng flag này khi cần thử nghiệm.
 const SHOW_YOUTUBE_ASK = false
@@ -55,7 +55,9 @@ export default function App() {
   const [cutShown, setCutShown] = useState(false)
   // Đếm ngược nghỉ 5 giây sau mỗi lượt phân tích — chống bấm dồn dập tốn token
   const [cooldown, setCooldown] = useState(0)
-  const [copiedKey, setCopiedKey] = useState(null) // key dòng vừa copy kết quả, hoặc 'ALL'
+  const [copiedKey, setCopiedKey] = useState(null) // key dòng vừa copy kết quả, hoặc 'ALL' / 'link:<key>'
+  // Các dòng đang mở bảng sửa kết quả ở tab Phân tích
+  const [editKeys, setEditKeys] = useState(() => new Set())
   const pollRef = useRef(null)
 
   const refresh = async () => {
@@ -230,20 +232,15 @@ export default function App() {
     }
   }
 
-  // Lưu text kết quả thành file .txt — người dùng tự đặt tên
-  const saveTxt = (suggestedName, text) => {
-    const name = prompt('Đặt tên file:', suggestedName)
-    if (name === null) return
-    const safe = (name.trim() || suggestedName).replace(/[<>:"/\\|?*]+/g, '').trim() || 'ket-qua'
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = safe.toLowerCase().endsWith('.txt') ? safe : safe + '.txt'
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000)
-  }
+
+  // Mở/đóng bảng sửa mốc cắt của một dòng ở tab Phân tích
+  const toggleEdit = key =>
+    setEditKeys(s => {
+      const next = new Set(s)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
 
   const analyzeAll = async () => {
     if (settings && !settings.hasGeminiKey) {
@@ -648,14 +645,6 @@ export default function App() {
           {rows.filter(r => analysis[r.key]?.status === 'ready').length > 1 && (
             <div className="results-tools">
               <button
-                onClick={() => saveTxt('ket-qua-phan-tich',
-                  rows
-                    .filter(r => analysis[r.key]?.status === 'ready')
-                    .map(r => segmentsToPipeText(analysis[r.key].name, analysis[r.key].segments))
-                    .join('\n\n')
-                )}
-              >💾 Lưu tất cả .txt</button>
-              <button
                 onClick={() => copyResult('ALL',
                   rows
                     .filter(r => analysis[r.key]?.status === 'ready')
@@ -673,13 +662,22 @@ export default function App() {
             return (
               <div className={`ana ana-${a.status}`} key={r.key}>
                 <div className="ana-head">
-                  <span className="ana-name" title={r.url}>{a.name || r.url}</span>
+                  <a className="ana-link" href={r.url} target="_blank" rel="noreferrer" title={a.name || r.url}>{r.url}</a>
+                  <button
+                    className="btn-icon"
+                    title="Copy link YouTube này"
+                    onClick={() => copyResult(`link:${r.key}`, r.url)}
+                  >{copiedKey === `link:${r.key}` ? '✓' : '🔗'}</button>
                   {a.status === 'analyzing' && <span className="ana-status">🔍 Đang phân tích, thường 5–10 giây...</span>}
                   {a.status === 'error' && <span className="ana-status err">❌ {a.error}</span>}
                   {a.status === 'ready' && <span className="ana-status ok">✓ {a.segments.length} đoạn</span>}
                   {a.status === 'ready' && (
                     <>
-                      <button className="btn-icon" title="Lưu kết quả này thành file .txt" onClick={() => saveTxt(a.name || 'ket-qua', pipe)}>💾</button>
+                      <button
+                        className={`btn-icon${editKeys.has(r.key) ? ' on' : ''}`}
+                        title={editKeys.has(r.key) ? 'Xong, đóng bảng sửa' : 'Sửa mốc thời gian / tiêu đề'}
+                        onClick={() => toggleEdit(r.key)}
+                      >{editKeys.has(r.key) ? '✓ Xong' : '✏️ Sửa'}</button>
                       <button className="btn-copy-result" onClick={() => copyResult(r.key, pipe)}>
                         {copiedKey === r.key ? '✓ Đã copy!' : '📋 Copy kết quả'}
                       </button>
@@ -690,6 +688,33 @@ export default function App() {
                   )}
                 </div>
                 {a.status === 'analyzing' && <div className="bar"><div className="bar-fill ana-pulse" style={{ width: '100%' }} /></div>}
+                {a.status === 'ready' && editKeys.has(r.key) && (
+                  <>
+                    <input
+                      className="ana-name-edit"
+                      value={a.name || ''}
+                      placeholder="Tên video (AI đặt) — sửa được"
+                      onChange={e => patchAnalysis(r.key, { name: e.target.value })}
+                    />
+                    <table className="seg-table">
+                      <thead>
+                        <tr><th></th><th>Bắt đầu</th><th>Kết thúc</th><th>Tiêu đề clip</th><th></th></tr>
+                      </thead>
+                      <tbody>
+                        {a.segments.map((s, i) => (
+                          <tr key={i}>
+                            <td className="seg-num">P{i + 1}</td>
+                            <td><input className="seg-time" value={s.start} onChange={e => updateSegment(r.key, i, { start: e.target.value })} /></td>
+                            <td><input className="seg-time" value={s.end} onChange={e => updateSegment(r.key, i, { end: e.target.value })} /></td>
+                            <td><input className="seg-title" value={s.title} onChange={e => updateSegment(r.key, i, { title: e.target.value })} /></td>
+                            <td><button className="btn-icon" title="Bỏ đoạn này" onClick={() => removeSegment(r.key, i)}>✕</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <button className="seg-add" onClick={() => addSegment(r.key)}>＋ Thêm đoạn</button>
+                  </>
+                )}
                 {a.status === 'ready' && <pre className="pipe-text">{pipe}</pre>}
               </div>
             )
