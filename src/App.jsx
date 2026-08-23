@@ -242,11 +242,22 @@ export default function App() {
       return next
     })
 
-  const analyzeAll = async () => {
+  // Thiếu key thì giải thích rõ rồi mới mở Cài đặt — trước đây Settings tự bật lên
+  // mà không nói gì, người dùng tưởng app lỗi.
+  const requireKey = () => {
     if (settings && !settings.hasGeminiKey) {
+      const why = settings.configError
+        ? settings.configError
+        : 'Máy này chưa có Gemini API key nên chưa phân tích được.'
+      alert([why, '', 'Mở Cài đặt ⚙️ và dán API key (lấy miễn phí tại aistudio.google.com/apikey), bấm Lưu là dùng được ngay.'].join('\n'))
       setSettingsOpen(true)
-      return
+      return false
     }
+    return true
+  }
+
+  const analyzeAll = async () => {
+    if (!requireKey()) return
     const targets = rows.filter(r => isYouTubeUrl(r.url) && !dupKeys.has(r.key) && analysis[r.key]?.status !== 'analyzing')
     if (!targets.length) return
     await runAnalysisPool(targets, { onReady: null, promptOverride: null })
@@ -319,10 +330,7 @@ export default function App() {
       setCutShown(true)
       return
     }
-    if (settings && !settings.hasGeminiKey) {
-      setSettingsOpen(true)
-      return
-    }
+    if (!requireKey()) return
     const promptOverride = cutSource === 'custom' ? customPrompt.trim() : null
     if (cutSource === 'custom' && !promptOverride) {
       alert('Bạn đang chọn "Prompt mới" nhưng chưa nhập prompt.')
@@ -346,10 +354,7 @@ export default function App() {
         return
       }
       // Prompt mới hoặc prompt trong Cài đặt: phân tích lại rồi cắt ngay từng link khi xong
-      if (settings && !settings.hasGeminiKey) {
-        setSettingsOpen(true)
-        return
-      }
+      if (!requireKey()) return
       const targets = usableRows.filter(r => analysis[r.key]?.status !== 'analyzing')
       if (!targets.length) return
       const promptOverride = cutSource === 'custom' ? customPrompt.trim() : null
@@ -444,6 +449,18 @@ export default function App() {
           <span>
             Đang chạy dở đó nha! Đừng vội đóng hay F5 trang — tiến trình đang chạy sẽ <b>không được nối lại</b>, phải làm lại từ đầu. Ráng chờ xíu, sắp xong rồi ☕
           </span>
+        </div>
+      )}
+
+      {settings && (!settings.hasGeminiKey || settings.configError) && (
+        <div className="error-banner">
+          <span className="warning-icon">🔑</span>
+          <span>
+            {settings.configError
+              ? settings.configError
+              : 'Chưa có Gemini API key trên máy này nên chưa phân tích được. Bấm nút bên cạnh để nhập key (lấy miễn phí tại aistudio.google.com/apikey) — key chỉ lưu trên máy này.'}
+          </span>
+          <button className="btn-reset" onClick={() => setSettingsOpen(true)}>⚙️ Nhập API key</button>
         </div>
       )}
 
@@ -1002,6 +1019,10 @@ function SettingsModal({ settings, onClose, onSaved }) {
             <span>🎯 <b>Kỹ</b> (~30 giây/video, tiêu đề hook mạnh hơn)</span>
           </label>
         </div>
+
+        {settings?.configError && (
+          <p className="set-error">⚠ {settings.configError}<br />File cài đặt: <code>{settings.configFile}</code></p>
+        )}
 
         <label className="set-label">Gemini API key</label>
         <input

@@ -5,7 +5,7 @@ import fs from 'fs'
 import os from 'os'
 import { fileURLToPath } from 'url'
 import { collectSpawnOutput, sendJsonOnce } from './http-utils.js'
-import { loadConfig, saveConfig, analyzeVideo, listModels, normalizeSegments, formatTimestamp, DEFAULT_PROMPT, DEFAULT_MODEL } from './gemini.js'
+import { loadConfig, saveConfig, getConfigError, configFilePath, analyzeVideo, listModels, normalizeSegments, formatTimestamp, DEFAULT_PROMPT, DEFAULT_MODEL } from './gemini.js'
 import { fetchTranscript } from './transcript.js'
 import { analyzeViaYoutubeAsk, NO_ASK_MESSAGE } from './youtube-ask.js'
 
@@ -400,6 +400,8 @@ app.get('/api/settings', (req, res) => {
   const cfg = loadConfig()
   res.json({
     hasGeminiKey: Boolean(cfg.geminiKey),
+    configError: getConfigError(),
+    configFile: configFilePath(),
     prompt: cfg.prompt || '',
     appendFormatRules: cfg.appendFormatRules !== false, // mặc định bật
     model: cfg.model || DEFAULT_MODEL,
@@ -420,6 +422,8 @@ app.post('/api/settings', (req, res) => {
   res.json({
     ok: true,
     hasGeminiKey: Boolean(cfg.geminiKey),
+    configError: getConfigError(),
+    configFile: configFilePath(),
     prompt: cfg.prompt || '',
     appendFormatRules: cfg.appendFormatRules !== false,
     model: cfg.model || DEFAULT_MODEL,

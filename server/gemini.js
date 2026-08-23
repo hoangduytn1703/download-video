@@ -12,12 +12,43 @@ export const DEFAULT_PROMPT = DEFAULT_CUT_PROMPT
 
 export const DEFAULT_MODEL = 'gemini-3.6-flash'
 
+// Lỗi đọc config lần gần nhất — để UI cảnh báo thay vì im lặng coi như "chưa có key"
+let configError = ''
+export const getConfigError = () => configError
+export const configFilePath = () => CONFIG_FILE
+
 export function loadConfig() {
+  let raw
   try {
-    return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'))
-  } catch {
+    raw = fs.readFileSync(CONFIG_FILE, 'utf8')
+  } catch (e) {
+    // chưa có file (máy mới) là bình thường; lỗi khác (quyền, ổ đĩa) thì phải báo
+    configError = e?.code === 'ENOENT' ? '' : `Không đọc được file cài đặt: ${e.message}`
     return {}
   }
+  try {
+    const cfg = JSON.parse(raw)
+    configError = ''
+    return cfg && typeof cfg === 'object' ? cfg : {}
+  } catch {
+    // File hỏng (ghi dở do tắt máy/mất điện...). KHÔNG trả {} im lặng — nếu không
+    // lần Lưu kế tiếp sẽ ghi đè làm mất luôn API key của người dùng.
+    configError = 'File cài đặt bị hỏng nên không đọc được API key. Bấm ⚙️ nhập lại key để sửa.'
+    const salvaged = salvageConfig(raw)
+    if (salvaged.geminiKey) configError = 'File cài đặt bị hỏng nhưng đã cứu được API key — bấm Lưu trong ⚙️ để ghi lại cho chắc.'
+    return salvaged
+  }
+}
+
+// Cứu dữ liệu từ file JSON hỏng: quét lấy các giá trị chuỗi còn nguyên vẹn
+export function salvageConfig(raw) {
+  const out = {}
+  const keep = new Set(['geminiKey', 'model', 'language', 'speedMode'])
+  // quét từng cặp "key": "value" còn nguyên vẹn trong text
+  for (const m of String(raw || '').matchAll(/"([A-Za-z]+)"\s*:\s*"([^"\n]*)"/g)) {
+    if (keep.has(m[1]) && m[2]) out[m[1]] = m[2]
+  }
+  return out
 }
 
 export function saveConfig(patch) {
@@ -28,7 +59,12 @@ export function saveConfig(patch) {
     if (next[k] === undefined || next[k] === null || next[k] === '') delete next[k]
   }
   fs.mkdirSync(CONFIG_DIR, { recursive: true })
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2), 'utf8')
+  // Ghi kiểu atomic: ra file tạm rồi rename. Tắt app/mất điện giữa lúc ghi cũng
+  // không để lại file JSON đứt nửa làm mất API key.
+  const tmp = CONFIG_FILE + '.tmp'
+  fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8')
+  fs.renameSync(tmp, CONFIG_FILE)
+  configError = ''
   return next
 }
 
