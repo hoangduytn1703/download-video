@@ -58,6 +58,8 @@ export default function App() {
   const [copiedKey, setCopiedKey] = useState(null) // key dòng vừa copy kết quả, hoặc 'ALL' / 'link:<key>'
   // Các dòng đang mở bảng sửa kết quả ở tab Phân tích
   const [editKeys, setEditKeys] = useState(() => new Set())
+  // Các dòng đang chạy "phân tích lại" riêng lẻ
+  const [rerunKeys, setRerunKeys] = useState(() => new Set())
   const pollRef = useRef(null)
 
   const refresh = async () => {
@@ -294,6 +296,23 @@ export default function App() {
       }
     })
     await Promise.all(workers)
+  }
+
+  // Phân tích lại đúng MỘT video — dùng khi cả loạt chỉ có 1-2 cái ra kết quả sai,
+  // không phải chạy lại hết cho tốn token.
+  const reanalyzeOne = async (row, promptOverride = null) => {
+    if (!requireKey()) return
+    if (analysis[row.key]?.status === 'analyzing') return
+    setRerunKeys(s2 => new Set(s2).add(row.key))
+    try {
+      await runAnalysisPool([row], { onReady: null, promptOverride })
+    } finally {
+      setRerunKeys(s2 => {
+        const next = new Set(s2)
+        next.delete(row.key)
+        return next
+      })
+    }
   }
 
 
@@ -688,6 +707,14 @@ export default function App() {
                   {a.status === 'analyzing' && <span className="ana-status">🔍 Đang phân tích, thường 5–10 giây...</span>}
                   {a.status === 'error' && <span className="ana-status err">❌ {a.error}</span>}
                   {a.status === 'ready' && <span className="ana-status ok">✓ {a.segments.length} đoạn</span>}
+                  {(a.status === 'ready' || a.status === 'error') && (
+                    <button
+                      className="btn-icon"
+                      title="Phân tích lại riêng video này (chỉ tốn 1 lượt AI)"
+                      onClick={() => reanalyzeOne(r)}
+                      disabled={rerunKeys.has(r.key)}
+                    >{rerunKeys.has(r.key) ? '⏳' : '🔄 Phân tích lại'}</button>
+                  )}
                   {a.status === 'ready' && (
                     <>
                       <button
@@ -750,6 +777,16 @@ export default function App() {
                   {a.status === 'analyzing' && <span className="ana-status">🤖 Gemini đang xem video, chờ 30–90 giây...</span>}
                   {a.status === 'error' && <span className="ana-status err">❌ {a.error}</span>}
                   {a.status === 'ready' && <span className="ana-status ok">✓ {a.segments.length} đoạn — sửa được trước khi cắt</span>}
+                  {(a.status === 'ready' || a.status === 'error') && (
+                    <button
+                      className="btn-icon"
+                      title={cutSource === 'custom'
+                        ? 'Phân tích lại video này bằng prompt mới đang nhập'
+                        : 'Phân tích lại riêng video này (chỉ tốn 1 lượt AI)'}
+                      onClick={() => reanalyzeOne(r, cutSource === 'custom' ? customPrompt.trim() || null : null)}
+                      disabled={rerunKeys.has(r.key) || hasRunning}
+                    >{rerunKeys.has(r.key) ? '⏳' : '🔄 Phân tích lại'}</button>
+                  )}
                   {a.status === 'ready' && (
                     <button
                       className="btn-icon btn-dl-one"
