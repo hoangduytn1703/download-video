@@ -480,7 +480,9 @@ app.post('/api/analyze', async (req, res) => {
     } catch (err) {
       console.warn('[analyze] transcript failed, falling back to video:', err?.message || err)
     }
-    const base = { apiKey: cfg.geminiKey, prompt: cfg.prompt, transcript, language: cfg.language }
+    // Tab Cắt có thể gửi prompt riêng cho lần cắt đó (không đụng prompt lưu trong Cài đặt)
+    const promptOverride = typeof req.body?.prompt === 'string' && req.body.prompt.trim() ? req.body.prompt.trim() : null
+    const base = { apiKey: cfg.geminiKey, prompt: promptOverride || cfg.prompt, transcript, language: cfg.language }
     // Chế độ Nhanh (mặc định): có phụ đề thì phân tích bằng model lite (~1-3s thay vì ~25s).
     // Lite lỗi hoặc trả kết quả rỗng thì tự chạy lại bằng model chính — không hỏng luồng.
     const useFast = transcript && cfg.speedMode !== 'quality'
