@@ -8,7 +8,7 @@ Tải file cài đặt ở mục [Releases](https://github.com/hoangduytn1703/do
 
 | File | Dùng khi |
 | --- | --- |
-| `Youtube Download Tool Setup x.y.z.exe` | Cài đặt bình thường, có shortcut ngoài desktop |
+| `YoutubeDownloadTool-Setup-x.y.z.exe` | Cài đặt bình thường, có shortcut ngoài desktop + tự cập nhật bản mới |
 | `YoutubeDownloadTool-portable-x.y.z.exe` | Không muốn cài — chép vào USB/ổ chung, double-click là chạy |
 
 Đã đóng gói sẵn `yt-dlp` và `ffmpeg` bên trong, **không cần cài Node.js hay gõ lệnh gì cả**.
@@ -52,9 +52,12 @@ Giao diện được deploy tự động lên https://hoangduytn1703.github.io/d
 
 Lưu ý: trang Pages **chỉ là giao diện** — nó gọi backend chạy ở `localhost:3001` trên máy người xem, nên phải `npm run server` trước. Với người dùng thường thì nên dùng bản app desktop ở trên cho tiện.
 
-## ✂️ Cắt clip AI (từ v1.1.0)
+## 🔍 Phân tích & ✂️ Cắt clip AI
 
-Chế độ thứ hai trong app: dán link YouTube, Gemini xem video và đề xuất 3-5 đoạn hay nhất, bạn duyệt/sửa các đoạn rồi bấm Cắt — app tải bản 1080p và cắt thành từng clip (`Ten_P1.mp4`, `Ten_P2.mp4`...) kèm file `Ten_titles.txt` chứa tiêu đề AI đặt cho từng đoạn. Chạy được nhiều link cùng lúc.
+App có 2 tab dùng chung một danh sách link (tối đa 20, tự phát hiện link trùng):
+
+- **🔍 Phân tích** (tab mặc định): dán link → Gemini đọc video (~5–10 giây/video) và trả về các đoạn hay nhất dạng text `Name: ... | start_1: ... | end_1: ... | title_bottom_1: ...` — bấm 📋 Copy hoặc 💾 lưu thành file `.txt`. Tab này chỉ trả text, không tải/không cắt gì cả.
+- **✂️ Cắt clip**: chọn nguồn mốc cắt — *dùng kết quả đã phân tích* (không tốn token) / *phân tích bằng prompt trong Cài đặt* / *prompt mới nhập tay* — bấm Phân tích để xem/sửa mốc, hoặc bấm Cắt: app tải bản 1080p rồi cắt thành từng clip (`Ten_P1.mp4`, `Ten_P2.mp4`...) kèm file `Ten_titles.txt` chứa tiêu đề AI đặt. Có nút ⬇ tải nguyên video (bản full, không cắt) cho từng link hoặc tất cả. Chạy được nhiều link song song.
 
 Cần **Gemini API key** (lấy miễn phí/trả phí tại aistudio.google.com/apikey) — nhập một lần trong Cài đặt (⚙️), key chỉ lưu trên máy đó (`%USERPROFILE%\.youtube-download-tool\config.json`), không lên git. Prompt phân tích cũng sửa được trong Cài đặt.
 
