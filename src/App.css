@@ -574,3 +574,24 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-
   border: none;
   flex-shrink: 0;
 }
+
+/* Khu chọn nguồn mốc cắt (tab Cắt) */
+.cut-source {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  background: rgba(10, 8, 20, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+}
+.cut-source .set-check { margin-top: 0; font-size: 14px; }
+/* Ô nhập prompt mới: full chiều ngang, cao thoáng — đè margin-left 28px của .ai-paste */
+.cut-source .ai-paste {
+  margin-left: 26px;
+  width: calc(100% - 26px);
+  min-height: 110px;
+  font-size: 14px;
+}
+.btn-dl-one { padding: 6px 12px; font-size: 12.5px; flex-shrink: 0; }

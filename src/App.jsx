@@ -190,6 +190,20 @@ export default function App() {
     await refresh()
   }
 
+  // Tải NGUYÊN video (bản full 1080p, không cắt) về folder của từng dòng
+  const downloadFull = async targetRows => {
+    const items = targetRows
+      .filter(r => isYouTubeUrl(r.url) && !dupKeys.has(r.key))
+      .map(r => ({ url: r.url, filename: r.filename || analysis[r.key]?.name || '', folder: r.folder }))
+    if (!items.length) return
+    await fetch(`${API}/api/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items, concurrency: Math.min(items.length, 10) }),
+    })
+    await refresh()
+  }
+
   const copyResult = async (key, text) => {
     try {
       await navigator.clipboard.writeText(text)
@@ -517,15 +531,22 @@ export default function App() {
             </button>
           )}
           {mode === 'cut' && (
-            <button
-              className="primary cut"
-              onClick={cutAll}
-              disabled={submitting || hasRunning || analyzingCount > 0 || (cutSource === 'analysis' ? readyRows.length === 0 : validCount === 0)}
-            >
-              {analyzingCount > 0
-                ? `🔍 Đang phân tích ${analyzingCount}...`
-                : `✂️ Cắt (${cutSource === 'analysis' ? readyRows.length : validCount})`}
-            </button>
+            <>
+              <button
+                onClick={() => downloadFull(usableRows)}
+                disabled={hasRunning || validCount === 0}
+                title="Tải nguyên video (bản full 1080p, không cắt) của tất cả link về folder"
+              >⬇ Tải tất cả ({validCount})</button>
+              <button
+                className="primary cut"
+                onClick={cutAll}
+                disabled={submitting || hasRunning || analyzingCount > 0 || (cutSource === 'analysis' ? readyRows.length === 0 : validCount === 0)}
+              >
+                {analyzingCount > 0
+                  ? `🔍 Đang phân tích ${analyzingCount}...`
+                  : `✂️ Cắt (${cutSource === 'analysis' ? readyRows.length : validCount})`}
+              </button>
+            </>
           )}
         </div>
 
@@ -622,6 +643,14 @@ export default function App() {
                   {a.status === 'analyzing' && <span className="ana-status">🤖 Gemini đang xem video, chờ 30–90 giây...</span>}
                   {a.status === 'error' && <span className="ana-status err">❌ {a.error}</span>}
                   {a.status === 'ready' && <span className="ana-status ok">✓ {a.segments.length} đoạn — sửa được trước khi cắt</span>}
+                  {a.status === 'ready' && (
+                    <button
+                      className="btn-icon btn-dl-one"
+                      title="Tải nguyên video này (bản full 1080p) về folder"
+                      onClick={() => downloadFull(rows.filter(x => x.key === r.key))}
+                      disabled={hasRunning}
+                    >⬇ Tải video này</button>
+                  )}
                 </div>
                 {a.status === 'analyzing' && <div className="bar"><div className="bar-fill ana-pulse" style={{ width: '100%' }} /></div>}
                 {a.status === 'ready' && (
