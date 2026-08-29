@@ -1258,6 +1258,10 @@ function SettingsModal({ settings, onClose, onSaved, probeUrl }) {
       })
       const d = await res.json()
       if (!res.ok) throw new Error(d?.message || `HTTP ${res.status}`)
+      // Xác nhận rõ đang lưu bao nhiêu key — tránh tình huống tưởng đã lưu mà chưa
+      const typedKeys = keyDraft.split(/[\s,]+/).map(k => k.trim()).filter(Boolean).length
+      if (typedKeys) alert('✓ Đã lưu ' + d.keyCount + ' API key.')
+      else if (d.keyCount === 0) alert('⚠ Chưa có API key nào được lưu. Dán key vào ô rồi bấm Lưu lại nhé.')
       onSaved(d)
     } catch (e) {
       setError('Không lưu được: ' + (e?.message || e))
