@@ -12,8 +12,8 @@ const API = getApiBase(runtime())
 const SHOW_PAUSE_ALL = false
 // Phase 2: Gemini API analyze in-app (costs quota at volume).
 const SHOW_AI_ANALYZE = true
-// Tab Phan tich chi tra text (khong tai/khong cat) nen cho nhieu hon
-const MAX_ANALYZE_ROWS = 10
+// Không giới hạn số link phân tích (giữ trần an toàn 1000 để tránh dán nhầm hàng vạn dòng)
+const MAX_ANALYZE_ROWS = 1000
 // Tắt nút "AI trên YouTube" (playwright mở Chrome) — mong manh, rủi ro tài khoản Google.
 // Code giữ nguyên, bật lại bằng flag này khi cần thử nghiệm.
 const SHOW_YOUTUBE_ASK = false
@@ -804,7 +804,7 @@ export default function App() {
             title={atRowLimit ? `Tối đa ${rowLimit} link mỗi lần` : ''}
           >＋ Thêm link</button>
           <button onClick={pasteLinks} disabled={hasRunning}>📋 Dán nhiều link</button>
-          <span className="row-count">{rows.length}/{rowLimit} link</span>
+          <span className="row-count">{rows.length} link</span>
           {mode === 'analyze' && (
             <button className="primary" onClick={analyzeAll} disabled={validCount === 0 || analyzingCount > 0 || cooldown > 0}>
               {analyzingCount > 0
