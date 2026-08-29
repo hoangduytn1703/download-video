@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'crypto'
-import { parseCookieInput, cookieValue, sapisidHash, authHeaders, extractJsonAfter, findAskCandidates, collectText, parseAskText } from './youtube-cookie.js'
+import { parseCookieInput, cookieValue, sapisidHash, authHeaders, extractJsonAfter, findAskCandidates, collectText, parseAskText, encodeYouchatContinuation, decodeYouchatContinuation, findYouchatToken, compactAskPrompt } from './youtube-cookie.js'
 
 test('đọc cookie dạng header copy từ DevTools (có/không tiền tố "cookie:")', () => {
   const r = parseCookieInput('cookie: PREF=f6=40000000; SAPISID=abc123; __Secure-3PAPISID=abc123; SID=xyz')
@@ -85,4 +85,44 @@ test('collectText + parseAskText đọc câu trả lời pipe từ response lồ
   assert.equal(r.name, 'Prueba')
   assert.equal(r.segments.length, 1)
   assert.equal(r.segments[0].title, 'Hola')
+})
+
+// Token thật YouTube web gửi khi hỏi trên video Tcz69wYsddU (không chứa thông tin đăng nhập)
+const REAL_TOKEN = 'kta-ngtREglQQXlvdWNoYXQaRGtnb3JDQUVTQzFSamVqWTVkMWx6WkdSVklocERTazkzZUhOeFozaGFXVVJHWXprd2JsRnJaRlRNWnpGMlVRJTNEJTNE'
+
+test('giải mã token youchat thật: đúng panel + video id', () => {
+  const d = decodeYouchatContinuation(REAL_TOKEN)
+  assert.equal(d.panel, 'PAyouchat')
+  assert.equal(d.videoId, 'Tcz69wYsddU')
+  assert.ok(d.trackingBytes && d.trackingBytes.length > 10)
+})
+
+test('encoder dựng lại được ĐÚNG token thật (round-trip byte-by-byte)', () => {
+  const d = decodeYouchatContinuation(REAL_TOKEN)
+  assert.equal(encodeYouchatContinuation(d.videoId, d.trackingBytes), REAL_TOKEN)
+})
+
+test('token tự dựng cho video mới (không blob theo dõi) giải mã lại đúng', () => {
+  const tok = encodeYouchatContinuation('W6g1HpKSZx4')
+  const d = decodeYouchatContinuation(tok)
+  assert.equal(d.panel, 'PAyouchat')
+  assert.equal(d.videoId, 'W6g1HpKSZx4')
+  assert.equal(d.trackingBytes, null)
+})
+
+test('findYouchatToken lấy đúng token youchat trong dữ liệu trang, bỏ token khác', () => {
+  const data = {
+    a: { continuationCommand: { token: 'Eg0SC2Fub3RoZXJUb2tlbg', request: 'CONTINUATION_REQUEST_TYPE_BROWSE' } },
+    b: [{ x: { continuationEndpoint: { continuationCommand: { token: REAL_TOKEN } } } }],
+  }
+  assert.equal(findYouchatToken(data), REAL_TOKEN)
+  assert.equal(findYouchatToken({ nothing: true }), null)
+})
+
+test('compactAskPrompt có marker, yêu cầu 1 dòng và đúng ngôn ngữ', () => {
+  const p = compactAskPrompt('Tây Ban Nha')
+  assert.match(p, /CUT_RESULT:/)
+  assert.match(p, /start_1/)
+  assert.match(p, /Tây Ban Nha/)
+  assert.ok(p.length < 700, 'phải ngắn hơn hẳn prompt đầy đủ')
 })

@@ -18,8 +18,6 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const MARKER = 'CUT_RESULT:'
 
 export const NO_COOKIE_MESSAGE = 'Chưa có cookie YouTube — dán cookie trong Cài đặt ⚙️ (mục YouTube cá nhân) rồi bấm Kiểm tra đăng nhập.'
-export const ASK_PANEL_NOT_FOUND = 'Không thấy panel "Hỏi về video này" trên trang video với tài khoản này — tài khoản cần Premium và đã bật tính năng Hỏi Gemini (YouTube Labs). Đã lưu dữ liệu trang vào thư mục ask-debug để soi.'
-export const ASK_NEED_PAYLOAD = 'Đã mở được panel Hỏi Gemini nhưng chưa gửi được câu hỏi — cần Payload của request get_panel lúc bạn gửi câu hỏi (DevTools → Payload → view source). Đã lưu request/response vào thư mục ask-debug.'
 
 export const cookieFilePath = () => COOKIE_FILE
 export const debugDirPath = () => DEBUG_DIR
@@ -287,6 +285,123 @@ export function collectText(node, acc = [], depth = 0) {
   return acc
 }
 
+// ===== Token continuation của panel Hỏi Gemini ("youchat") =====
+// Giải mã từ request thật của YouTube web (get_panel), 4 lớp protobuf lồng nhau:
+//   L1: field 377091426 → L2
+//   L2: field 2 = "PAyouchat", field 3 = urlencode(base64(L3))
+//   L3: field 162 → L4
+//   L4: field 1 = 1, field 2 = videoId, field 4 = blob theo dõi (giống clickTrackingParams)
+// Nên với video mới, không có token sẵn trên trang vẫn tự dựng được.
+const YOUCHAT_PANEL = 'PAyouchat'
+
+function varint(n) {
+  const out = []
+  let v = BigInt(n)
+  do {
+    let b = Number(v & 0x7fn)
+    v >>= 7n
+    if (v) b |= 0x80
+    out.push(b)
+  } while (v)
+  return Buffer.from(out)
+}
+const pbBytes = (num, payload) => {
+  const buf = Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload), 'utf8')
+  return Buffer.concat([varint((BigInt(num) << 3n) | 2n), varint(buf.length), buf])
+}
+const pbVarint = (num, value) => Buffer.concat([varint(BigInt(num) << 3n), varint(value)])
+const b64url = buf => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+const fromB64 = s => Buffer.from(decodeURIComponent(String(s)).replace(/-/g, '+').replace(/_/g, '/'), 'base64')
+
+function readFields(buf) {
+  const out = []
+  let i = 0
+  while (i < buf.length) {
+    let tag = 0n
+    let sh = 0n
+    for (;;) {
+      const c = buf[i++]
+      if (c === undefined) return out
+      tag |= BigInt(c & 0x7f) << sh
+      if (!(c & 0x80)) break
+      sh += 7n
+    }
+    const num = Number(tag >> 3n)
+    const wt = Number(tag & 7n)
+    if (wt === 0) {
+      let v = 0n
+      sh = 0n
+      for (;;) {
+        const c = buf[i++]
+        if (c === undefined) return out
+        v |= BigInt(c & 0x7f) << sh
+        if (!(c & 0x80)) break
+        sh += 7n
+      }
+      out.push({ num, wt, value: v })
+    } else if (wt === 2) {
+      let len = 0
+      let s2 = 0
+      for (;;) {
+        const c = buf[i++]
+        if (c === undefined) return out
+        len |= (c & 0x7f) << s2
+        if (!(c & 0x80)) break
+        s2 += 7
+      }
+      out.push({ num, wt, bytes: buf.subarray(i, i + len) })
+      i += len
+    } else if (wt === 5) { i += 4; out.push({ num, wt }) }
+    else if (wt === 1) { i += 8; out.push({ num, wt }) }
+    else return out
+  }
+  return out
+}
+
+export function encodeYouchatContinuation(videoId, tracking = null) {
+  const l4 = Buffer.concat([pbVarint(1, 1), pbBytes(2, videoId), ...(tracking && tracking.length ? [pbBytes(4, tracking)] : [])])
+  const l3 = pbBytes(162, l4)
+  const l2 = Buffer.concat([pbBytes(2, YOUCHAT_PANEL), pbBytes(3, encodeURIComponent(l3.toString('base64')))])
+  return b64url(pbBytes(377091426, l2))
+}
+
+export function decodeYouchatContinuation(token) {
+  try {
+    const l1 = readFields(fromB64(token)).find(f => f.wt === 2)
+    if (!l1) return null
+    const l2 = readFields(l1.bytes)
+    const panel = l2.find(f => f.num === 2 && f.wt === 2)?.bytes.toString('utf8') || ''
+    const inner = l2.find(f => f.num === 3 && f.wt === 2)?.bytes.toString('utf8')
+    if (!inner) return { panel }
+    const l3 = readFields(fromB64(inner)).find(f => f.wt === 2)
+    const l4 = l3 ? readFields(l3.bytes) : []
+    return {
+      panel,
+      videoId: l4.find(f => f.num === 2 && f.wt === 2)?.bytes.toString('utf8') || '',
+      trackingBytes: l4.find(f => f.num === 4 && f.wt === 2)?.bytes || null,
+    }
+  } catch {
+    return null
+  }
+}
+
+// Tìm token youchat sẵn có trong dữ liệu trang (chuẩn nhất vì do YouTube sinh ra)
+export function findYouchatToken(node, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 80) return null
+  if (Array.isArray(node)) {
+    for (const v of node) { const r = findYouchatToken(v, depth + 1); if (r) return r }
+    return null
+  }
+  for (const [k, v] of Object.entries(node)) {
+    if ((k === 'token' || k === 'continuation') && typeof v === 'string' && v.length > 40) {
+      if (decodeYouchatContinuation(v)?.panel === YOUCHAT_PANEL) return v
+    }
+    const r = findYouchatToken(v, depth + 1)
+    if (r) return r
+  }
+  return null
+}
+
 function dump(name, data) {
   try {
     fs.mkdirSync(DEBUG_DIR, { recursive: true })
@@ -312,6 +427,7 @@ export async function probeAsk(url) {
   const videoId = videoIdOf(url)
   const page = await fetchWatchPage(cookie, videoId)
   const candidates = findAskCandidates(page.initialData)
+  const pageToken = findYouchatToken(page.initialData)
   const panelIds = []
   for (const p of page.initialData.engagementPanels || []) {
     const r = p.engagementPanelSectionListRenderer
@@ -321,6 +437,7 @@ export async function probeAsk(url) {
     videoId,
     loggedIn: page.cfg.loggedIn,
     clientVersion: page.cfg.clientVersion,
+    youchatToken: pageToken ? 'có sẵn trên trang (video ' + decodeYouchatContinuation(pageToken)?.videoId + ')' : 'không có trên trang — app sẽ tự dựng token',
     engagementPanels: panelIds,
     askCandidates: candidates.map(c => ({ path: c.path, key: c.key, value: c.value, endpointTypes: c.endpoints.map(e => e.type) })),
   }
@@ -335,36 +452,104 @@ function parseAskText(text) {
   return { name: parsed.name, segments: normalizeSegments(parsed.segments) }
 }
 
+// Prompt rút gọn — dùng khi câu hỏi đầy đủ bị YouTube từ chối (ô hỏi có giới hạn độ dài)
+export function compactAskPrompt(language) {
+  const lang = String(language || 'Tây Ban Nha').trim()
+  return `Chọn TẤT CẢ các đoạn trong video dài 70–150 giây có hook mạnh ở 1–2 câu đầu (giật gân, gây tò mò), bỏ intro và outro. ` +
+    `Trả lời ĐÚNG MỘT DÒNG, không giải thích gì thêm, bắt đầu bằng ${MARKER} rồi theo đúng mẫu: ` +
+    `Name: <tên video 3–8 từ bằng tiếng ${lang}, không tên riêng> | start_1: mm:ss | end_1: mm:ss | title_bottom_1: <3–8 từ tiếng ${lang}, không tên riêng> | start_2: mm:ss | end_2: mm:ss | title_bottom_2: ... (tiếp cho mọi đoạn)`
+}
+
+const hasAnswer = text => text.includes(MARKER) && /start_\s*1/i.test(text)
+
+function consistencyJars(res) {
+  const jar = res?.responseContext?.consistencyTokenJar
+  return jar?.encryptedTokenJarContents
+    ? [{ encryptedTokenJarContents: jar.encryptedTokenJarContents, expirationSeconds: jar.expirationSeconds }]
+    : []
+}
+
+// Đưa consistencyTokenJars vào context để lần poll sau thấy được trạng thái mới nhất
+function cfgWithJars(cfg, jars) {
+  if (!jars.length) return cfg
+  const ctx = cfg?.context || {}
+  return { ...cfg, context: { ...ctx, request: { ...(ctx.request || {}), useSsl: true, consistencyTokenJars: jars } } }
+}
+
+// Một tài khoản chỉ hỏi một câu tại một thời điểm — tránh bị YouTube coi là spam
+let askQueue = Promise.resolve()
+const enqueueAsk = fn => {
+  const run = askQueue.then(fn, fn)
+  askQueue = run.catch(() => {})
+  return run
+}
+
+export const ASK_NO_ANSWER = 'YouTube không trả câu trả lời đúng định dạng sau 2 phút — xem file ask-debug/ask-<videoId>.json để soi. Có thể tính năng Hỏi Gemini chưa bật cho tài khoản/video này.'
+
 // Phân tích video bằng "Hỏi về video này" của YouTube với cookie cá nhân.
-// Bước gửi câu hỏi phụ thuộc payload nội bộ chưa biết chắc — nên mọi request/response
-// đều được lưu vào ask-debug để hoàn thiện dần.
+// Gửi câu hỏi qua get_panel (formData.inputComposerFormData), rồi poll cùng endpoint
+// tới khi câu trả lời (marker + start_1) xuất hiện trong entity mutations.
 export async function analyzeViaCookieAsk(url, { prompt, language } = {}) {
   const cookie = loadCookie()
   if (!cookie) throw new Error(NO_COOKIE_MESSAGE)
-  const videoId = videoIdOf(url)
-  const page = await fetchWatchPage(cookie, videoId)
-  const candidates = findAskCandidates(page.initialData)
-  const withEndpoint = candidates.find(c => c.endpoints.some(e => /getPanelEndpoint|continuation/i.test(e.type)))
-  dump(`watch-${videoId}.json`, { candidates, engagementPanels: page.initialData.engagementPanels })
-  if (!withEndpoint) throw new Error(ASK_PANEL_NOT_FOUND)
+  return enqueueAsk(async () => {
+    const videoId = videoIdOf(url)
+    const page = await fetchWatchPage(cookie, videoId)
+    const pageToken = findYouchatToken(page.initialData)
+    let continuation = pageToken || encodeYouchatContinuation(videoId)
+    const steps = []
+    const record = (step, request, response) => {
+      if (steps.length < 12) steps.push({ step, at: new Date().toISOString(), request, response })
+    }
 
-  const ep = withEndpoint.endpoints.find(e => /getPanelEndpoint|continuation/i.test(e.type)).body
-  const question = `${buildPrompt(prompt, true, language)}\n\nBắt đầu câu trả lời bằng ${MARKER}`
-  // get_panel nhận panelId/params từ endpoint trên trang; kèm câu hỏi ở các tên trường
-  // thường gặp — nếu YouTube dùng tên khác, response lưu trong ask-debug sẽ cho biết.
-  const body = {
-    videoId,
-    ...(ep.panelId ? { panelId: ep.panelId } : {}),
-    ...(ep.params ? { params: ep.params } : {}),
-    ...(ep.continuationCommand?.token ? { continuation: ep.continuationCommand.token } : {}),
-    ...(ep.token ? { continuation: ep.token } : {}),
-    query: question,
-  }
-  const res = await innertube(cookie, page.cfg, 'get_panel', body)
-  dump(`get_panel-${videoId}.json`, { request: body, response: res })
-  const result = parseAskText(collectText(res).join('\n'))
-  if (result.segments.length) return result
-  throw new Error(ASK_NEED_PAYLOAD)
+    const sendQuestion = async question => {
+      const clientMessageId = `youchat-${Date.now()}`
+      const body = { continuation, formData: { inputComposerFormData: { clientMessageId, playerOffsetMs: '0', userInputText: question } } }
+      const res = await innertube(cookie, page.cfg, 'get_panel', body)
+      record('send', { ...body, formData: { inputComposerFormData: { ...body.formData.inputComposerFormData, userInputText: `(${question.length} chữ)` } } }, res)
+      return res
+    }
+
+    const fullQuestion = `${buildPrompt(prompt, true, language)}\n\nBắt đầu câu trả lời bằng ${MARKER}`
+    let res = await sendQuestion(fullQuestion)
+    let mutations = res?.frameworkUpdates?.entityBatchUpdate?.mutations || []
+    let promptUsed = 'full'
+    if (!mutations.length && !hasAnswer(collectText(res).join('\n'))) {
+      // Không thấy entity "đang chờ trả lời" — khả năng câu hỏi quá dài, thử bản rút gọn
+      promptUsed = 'compact'
+      res = await sendQuestion(compactAskPrompt(language))
+    }
+
+    let jars = consistencyJars(res)
+    let text = collectText(res).join('\n')
+    const deadline = Date.now() + 120 * 1000
+    let polls = 0
+    while (!hasAnswer(text) && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 2500))
+      const nextTok = findYouchatToken(res)
+      if (nextTok) continuation = nextTok
+      const body = { continuation }
+      res = await innertube(cookie, cfgWithJars(page.cfg, jars), 'get_panel', body)
+      polls++
+      if (polls <= 3 || polls % 8 === 0) record(`poll-${polls}`, body, res)
+      const j = consistencyJars(res)
+      if (j.length) jars = j
+      text = collectText(res).join('\n')
+    }
+
+    dump(`ask-${videoId}.json`, {
+      videoId,
+      tokenSource: pageToken ? 'page' : 'built',
+      promptUsed,
+      polls,
+      answered: hasAnswer(text),
+      textSeen: text.slice(0, 6000),
+      steps,
+    })
+    const result = parseAskText(text)
+    if (result.segments.length) return result
+    throw new Error(ASK_NO_ANSWER)
+  })
 }
 
 export { parseAskText }
