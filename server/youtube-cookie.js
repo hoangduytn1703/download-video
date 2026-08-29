@@ -484,7 +484,12 @@ const enqueueAsk = fn => {
   return run
 }
 
-export const ASK_NO_ANSWER = 'YouTube không trả câu trả lời đúng định dạng sau 2 phút — xem file ask-debug/ask-<videoId>.json để soi. Có thể tính năng Hỏi Gemini chưa bật cho tài khoản/video này.'
+export const ASK_NO_ANSWER = 'YouTube không trả câu trả lời đúng định dạng — xem ask-debug/ask-<videoId>.json để soi.'
+export const ASK_PANEL_GONE = 'YouTube tạm không mở panel Hỏi Gemini cho tài khoản này (thường do gọi nhiều bị siết tạm thời, hoặc tính năng chưa bật). Chờ vài phút rồi thử lại, hoặc đổi Nguồn phân tích về Gemini API trong Cài đặt.'
+export const ASK_ERROR_REPLY = 'YouTube trả "Đã xảy ra lỗi, vui lòng thử lại" cho panel Hỏi Gemini — thường bị siết tạm thời khi hỏi nhiều. Chờ vài phút rồi thử lại, hoặc dùng Gemini API.'
+// YouTube báo lỗi trong panel thay vì trả lời — bắt sớm để khỏi poll vô ích
+const ERROR_REPLY_RE = /Đã xảy ra lỗi|đã xảy ra sự cố|error occurred|please try again|try again later|something went wrong/i
+const hasErrorReply = text => ERROR_REPLY_RE.test(text) && !hasAnswer(text)
 
 // Phân tích video bằng "Hỏi về video này" của YouTube với cookie cá nhân.
 // Gửi câu hỏi qua get_panel (formData.inputComposerFormData), rồi poll cùng endpoint
@@ -496,11 +501,19 @@ export async function analyzeViaCookieAsk(url, { prompt, language } = {}) {
     const videoId = videoIdOf(url)
     const page = await fetchWatchPage(cookie, videoId)
     const pageToken = findYouchatToken(page.initialData)
-    let continuation = pageToken || encodeYouchatContinuation(videoId)
     const steps = []
     const record = (step, request, response) => {
       if (steps.length < 12) steps.push({ step, at: new Date().toISOString(), request, response })
     }
+
+    // Token khởi tạo phải là token THẬT do YouTube nhúng trên trang (có clickTrackingParams).
+    // Token tự dựng đã chứng minh bị YouTube từ chối ("Đã xảy ra lỗi") nên không dùng để hỏi;
+    // không có token thật = panel Ask chưa được YouTube trả về -> báo ngay, khỏi poll vô ích.
+    if (!pageToken) {
+      dump(`ask-${videoId}.json`, { videoId, tokenSource: 'none', reason: 'panel Hỏi Gemini không có trong trang (server-side)', engagementPanels: (page.initialData.engagementPanels || []).map(p => p.engagementPanelSectionListRenderer?.panelIdentifier) })
+      throw new Error(ASK_PANEL_GONE)
+    }
+    let continuation = pageToken
 
     const sendQuestion = async question => {
       const clientMessageId = `youchat-${Date.now()}`
@@ -512,34 +525,50 @@ export async function analyzeViaCookieAsk(url, { prompt, language } = {}) {
 
     const fullQuestion = `${buildPrompt(prompt, true, language)}\n\nBắt đầu câu trả lời bằng ${MARKER}`
     let res = await sendQuestion(fullQuestion)
-    let mutations = res?.frameworkUpdates?.entityBatchUpdate?.mutations || []
     let promptUsed = 'full'
-    if (!mutations.length && !hasAnswer(collectText(res).join('\n'))) {
+    let text = collectText(res).join('\n')
+    // YouTube báo lỗi ngay -> dừng luôn (đừng poll), báo rõ nguyên nhân
+    if (hasErrorReply(text)) {
+      dump(`ask-${videoId}.json`, { videoId, tokenSource: 'page', promptUsed, polls: 0, answered: false, errorReply: true, textSeen: text.slice(0, 2000), steps })
+      throw new Error(ASK_ERROR_REPLY)
+    }
+    const mutations = res?.frameworkUpdates?.entityBatchUpdate?.mutations || []
+    if (!mutations.length && !hasAnswer(text)) {
       // Không thấy entity "đang chờ trả lời" — khả năng câu hỏi quá dài, thử bản rút gọn
       promptUsed = 'compact'
       res = await sendQuestion(compactAskPrompt(language))
+      text = collectText(res).join('\n')
+      if (hasErrorReply(text)) {
+        dump(`ask-${videoId}.json`, { videoId, tokenSource: 'page', promptUsed, polls: 0, answered: false, errorReply: true, textSeen: text.slice(0, 2000), steps })
+        throw new Error(ASK_ERROR_REPLY)
+      }
     }
 
     let jars = consistencyJars(res)
-    let text = collectText(res).join('\n')
-    const deadline = Date.now() + 120 * 1000
+    // Câu trả lời thường về ngay lần gửi đầu; nếu chưa, chờ tối đa 30s (không phải 2 phút)
+    const deadline = Date.now() + 30 * 1000
     let polls = 0
     while (!hasAnswer(text) && Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, 2500))
+      await new Promise(r => setTimeout(r, 2000))
       const nextTok = findYouchatToken(res)
       if (nextTok) continuation = nextTok
       const body = { continuation }
       res = await innertube(cookie, cfgWithJars(page.cfg, jars), 'get_panel', body)
       polls++
-      if (polls <= 3 || polls % 8 === 0) record(`poll-${polls}`, body, res)
+      if (polls <= 3 || polls % 5 === 0) record(`poll-${polls}`, body, res)
       const j = consistencyJars(res)
       if (j.length) jars = j
       text = collectText(res).join('\n')
+      if (hasErrorReply(text)) break // YouTube báo lỗi giữa chừng -> thôi
+    }
+    if (hasErrorReply(text) && !hasAnswer(text)) {
+      dump(`ask-${videoId}.json`, { videoId, tokenSource: 'page', promptUsed, polls, answered: false, errorReply: true, textSeen: text.slice(0, 2000), steps })
+      throw new Error(ASK_ERROR_REPLY)
     }
 
     dump(`ask-${videoId}.json`, {
       videoId,
-      tokenSource: pageToken ? 'page' : 'built',
+      tokenSource: 'page',
       promptUsed,
       polls,
       answered: hasAnswer(text),
