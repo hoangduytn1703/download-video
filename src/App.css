@@ -670,3 +670,9 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-
 }
 .result-tools-row { display: flex; align-items: center; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
 .result-tools-row .segcount { margin-left: auto; }
+
+/* Khu lưu JSON nhiều file */
+.json-save { flex-wrap: wrap; gap: 8px; align-items: center; }
+.json-lbl { color: #a9adc4; font-size: 13px; }
+.json-name { width: 90px; }
+.json-folder { flex: 1; min-width: 160px; }

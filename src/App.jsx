@@ -13,7 +13,7 @@ const SHOW_PAUSE_ALL = false
 // Phase 2: Gemini API analyze in-app (costs quota at volume).
 const SHOW_AI_ANALYZE = true
 // Tab Phan tich chi tra text (khong tai/khong cat) nen cho nhieu hon
-const MAX_ANALYZE_ROWS = 40
+const MAX_ANALYZE_ROWS = 10
 // Tắt nút "AI trên YouTube" (playwright mở Chrome) — mong manh, rủi ro tài khoản Google.
 // Code giữ nguyên, bật lại bằng flag này khi cần thử nghiệm.
 const SHOW_YOUTUBE_ASK = false
@@ -59,6 +59,10 @@ export default function App() {
   // Text nháp cho ô sửa trực tiếp; và các dòng đang mở bảng sửa
   const [drafts, setDrafts] = useState({})
   const [tableOpen, setTableOpen] = useState(() => new Set())
+  // Lưu JSON nhiều file: tên gốc mặc định theo ngày (dd) + thư mục lưu
+  const [jsonPrefix, setJsonPrefix] = useState(() => String(new Date().getDate()).padStart(2, '0'))
+  const [jsonFolder, setJsonFolder] = useState('')
+  const [savingJson, setSavingJson] = useState(false)
   // Các dòng đang chạy "phân tích lại" riêng lẻ
   const [rerunKeys, setRerunKeys] = useState(() => new Set())
   const pollRef = useRef(null)
@@ -75,6 +79,7 @@ export default function App() {
       .then(r => r.json())
       .then(d => {
         setDefaultFolder(d.folder)
+        setJsonFolder(prev => prev || d.folder)
         setRows(rs => rs.map(r => (r.folder ? r : { ...r, folder: d.folder })))
       })
     fetch(`${API}/api/settings`)
@@ -275,6 +280,34 @@ export default function App() {
     return true
   }
 
+  const pickJsonFolder = async () => {
+    const d = await fetch(API + '/api/pick-folder').then(r => r.json())
+    if (d.folder) setJsonFolder(d.folder)
+  }
+
+  // Lưu mỗi kết quả thành 1 file JSON riêng, tên <prefix>-01, <prefix>-02...
+  const saveAllJson = async () => {
+    const ready = rows.filter(r => analysis[r.key]?.status === 'ready')
+    if (!ready.length) return
+    const prefix = (jsonPrefix.trim() || String(new Date().getDate()).padStart(2, '0'))
+    const items = ready.map((r, i) => ({
+      filename: prefix + '-' + String(i + 1).padStart(2, '0'),
+      json: segmentsToJson(r.url, analysis[r.key].name, analysis[r.key].segments),
+    }))
+    setSavingJson(true)
+    try {
+      const res = await fetch(API + '/api/save-json', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder: jsonFolder, items }),
+      }).then(r => r.json())
+      if (res.ok) alert('Đã lưu ' + res.saved.length + ' file JSON vào:\n' + res.folder)
+      else alert('Lỗi lưu JSON: ' + res.message)
+    } finally {
+      setSavingJson(false)
+    }
+  }
+
   const analyzeAll = async () => {
     if (!requireKey()) return
     const targets = rows.filter(r => isYouTubeUrl(r.url) && !dupKeys.has(r.key) && analysis[r.key]?.status !== 'analyzing')
@@ -287,7 +320,7 @@ export default function App() {
   // tab Cắt dùng để enqueue job cắt ngay; tab Phân tích thì chỉ hiển thị.
   const runAnalysisPool = async (targets, { onReady, promptOverride }) => {
     const pending = [...targets]
-    const workers = Array.from({ length: Math.min(5, pending.length) }, async () => {
+    const workers = Array.from({ length: Math.min(10, pending.length) }, async () => {
       while (pending.length) {
         const r = pending.shift()
         patchAnalysis(r.key, { status: 'analyzing', error: '' })
@@ -703,16 +736,26 @@ export default function App() {
 
       {mode === 'analyze' && rows.some(r => analysis[r.key]) && (
         <div className="analysis">
-          {rows.filter(r => analysis[r.key]?.status === 'ready').length > 1 && (
-            <div className="results-tools">
-              <button
-                title="Tải tất cả kết quả ra một file .json (mảng các video)"
-                onClick={() => saveJson('ket-qua-phan-tich',
-                  rows
-                    .filter(r => analysis[r.key]?.status === 'ready')
-                    .map(r => segmentsToJson(r.url, analysis[r.key].name, analysis[r.key].segments))
-                )}
-              >⬇ Tải tất cả .json</button>
+          {rows.filter(r => analysis[r.key]?.status === 'ready').length >= 1 && (
+            <div className="results-tools json-save">
+              <span className="json-lbl">Lưu JSON:</span>
+              <input
+                className="json-name"
+                value={jsonPrefix}
+                onChange={e => setJsonPrefix(e.target.value)}
+                title="Tên gốc — file sẽ là tên-01.json, tên-02.json..."
+                placeholder="vd 29"
+              />
+              <input
+                className="json-folder"
+                value={jsonFolder}
+                onChange={e => setJsonFolder(e.target.value)}
+                placeholder="Thư mục lưu"
+              />
+              <button className="btn-icon" title="Chọn thư mục" onClick={pickJsonFolder}>📁</button>
+              <button className="primary" onClick={saveAllJson} disabled={savingJson}>
+                {savingJson ? 'Đang lưu...' : '⬇ Lưu tất cả JSON (' + rows.filter(r => analysis[r.key]?.status === 'ready').length + ')'}
+              </button>
               <button
                 onClick={() => copyResult('ALL',
                   rows
@@ -721,7 +764,7 @@ export default function App() {
                     .join('\n\n')
                 )}
               >
-                {copiedKey === 'ALL' ? '✓ Đã copy tất cả!' : `📋 Copy tất cả (${rows.filter(r => analysis[r.key]?.status === 'ready').length})`}
+                {copiedKey === 'ALL' ? '✓ Đã copy tất cả!' : '📋 Copy tất cả (' + rows.filter(r => analysis[r.key]?.status === 'ready').length + ')'}
               </button>
             </div>
           )}
@@ -957,20 +1000,17 @@ function SegCountControl({ value, onChange, disabled }) {
         <span>Số đoạn cụ thể</span>
       </label>
       {custom && (
-        <input
+        <select
           className="segcount-num"
-          type="number"
-          min={2}
-          max={20}
           value={value}
           disabled={disabled}
-          onChange={e => {
-            const n = parseInt(e.target.value, 10)
-            onChange(Number.isFinite(n) ? Math.min(20, Math.max(2, n)) : 2)
-          }}
-        />
+          onChange={e => onChange(parseInt(e.target.value, 10))}
+        >
+          {Array.from({ length: 19 }, (_, i) => i + 2).map(n => (
+            <option key={n} value={n}>{n} đoạn</option>
+          ))}
+        </select>
       )}
-      {custom && <span className="segcount-hint">(2–20 đoạn)</span>}
     </div>
   )
 }

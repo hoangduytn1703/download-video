@@ -396,6 +396,31 @@ app.get('/api/pick-folder', async (req, res) => {
   sendJsonOnce(res, { folder })
 })
 
+// Lưu nhiều file .json thẳng vào thư mục (không qua hộp thoại "Save as" của trình duyệt).
+// items: [{ filename, json }] — mỗi phần tử ghi thành <filename>.json.
+app.post('/api/save-json', (req, res) => {
+  const folder = String(req.body?.folder || '').trim() || defaultFolder
+  const items = Array.isArray(req.body?.items) ? req.body.items : []
+  if (!items.length) return res.status(400).json({ ok: false, message: 'Không có kết quả nào để lưu' })
+  try {
+    fs.mkdirSync(folder, { recursive: true })
+  } catch (e) {
+    return res.status(422).json({ ok: false, message: 'Không tạo được thư mục: ' + e.message })
+  }
+  const saved = []
+  for (const it of items) {
+    const base = sanitizeFilename(String(it?.filename || 'ket-qua')) || 'ket-qua'
+    const file = base.toLowerCase().endsWith('.json') ? base : base + '.json'
+    try {
+      fs.writeFileSync(path.join(folder, file), JSON.stringify(it?.json ?? {}, null, 4), 'utf8')
+      saved.push(file)
+    } catch (e) {
+      return res.status(422).json({ ok: false, message: 'Lỗi ghi ' + file + ': ' + e.message, saved, folder })
+    }
+  }
+  res.json({ ok: true, saved, folder })
+})
+
 
 // ===== Cắt clip theo phân tích AI (Gemini) =====
 
