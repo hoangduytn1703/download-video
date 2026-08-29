@@ -236,16 +236,28 @@ export default function App() {
   }
 
   // Tải kết quả ra file .json đúng định dạng công cụ dựng clip của team
-  const saveJson = (suggestedName, data) => {
-    const safe = String(suggestedName || 'ket-qua').replace(/[<>:"/\\|?*]+/g, '').trim() || 'ket-qua'
-    const blob = new Blob([JSON.stringify(data, null, 4)], { type: 'application/json;charset=utf-8' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = safe.toLowerCase().endsWith('.json') ? safe : safe + '.json'
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+  // Ghi thẳng nhiều/1 file JSON vào thư mục đã chọn (không mở hộp thoại "Save as")
+  const writeJsonFiles = async items => {
+    const res = await fetch(`${API}/api/save-json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder: jsonFolder, items }),
+    }).then(r => r.json())
+    return res
+  }
+
+  // Lưu riêng 1 kết quả — cùng thư mục + kiểu tên với "Lưu tất cả JSON" (prefix-stt)
+  const saveOneJson = async r => {
+    const ready = rows.filter(x => analysis[x.key]?.status === 'ready')
+    const stt = ready.findIndex(x => x.key === r.key) + 1 || 1
+    const prefix = jsonPrefix.trim() || String(new Date().getDate()).padStart(2, '0')
+    const items = [{
+      filename: `${prefix}-${String(stt).padStart(2, '0')}`,
+      json: segmentsToJson(r.url, analysis[r.key].name, analysis[r.key].segments),
+    }]
+    const res = await writeJsonFiles(items)
+    if (res.ok) alert('Đã lưu ' + res.saved[0] + ' vào:\n' + res.folder)
+    else alert('Lỗi lưu JSON: ' + res.message)
   }
 
   const copyResult = async (key, text) => {
@@ -296,11 +308,7 @@ export default function App() {
     }))
     setSavingJson(true)
     try {
-      const res = await fetch(API + '/api/save-json', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder: jsonFolder, items }),
-      }).then(r => r.json())
+      const res = await writeJsonFiles(items)
       if (res.ok) alert('Đã lưu ' + res.saved.length + ' file JSON vào:\n' + res.folder)
       else alert('Lỗi lưu JSON: ' + res.message)
     } finally {
@@ -796,8 +804,8 @@ export default function App() {
                     <>
                       <button
                         className="btn-icon"
-                        title="Tải kết quả này ra file .json (định dạng công cụ dựng clip)"
-                        onClick={() => saveJson(a.name || 'ket-qua', segmentsToJson(r.url, a.name, a.segments))}
+                        title="Lưu kết quả này thành file .json vào thư mục đã chọn"
+                        onClick={() => saveOneJson(r)}
                       >⬇ JSON</button>
                       <button className="btn-copy-result" onClick={() => copyResult(r.key, pipe)}>
                         {copiedKey === r.key ? '✓ Đã copy!' : '📋 Copy kết quả'}
