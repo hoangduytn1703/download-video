@@ -468,6 +468,8 @@ app.post('/api/settings', (req, res) => {
   // Nhiều key một lần: mỗi dòng / phẩy / khoảng trắng một key. Mảng rỗng = xóa hết key.
   if (Array.isArray(req.body?.geminiKeys)) {
     patch.geminiKeys = req.body.geminiKeys.map(k => String(k || '').trim()).filter(Boolean)
+    // Lưu danh sách key mới thì bỏ luôn key lẻ cũ (geminiKey) để không lẫn key hỏng vào xoay vòng
+    if (patch.geminiKeys.length) patch.geminiKey = ''
     keyCursor = 0
   }
   if (typeof req.body?.prompt === 'string') patch.prompt = req.body.prompt.trim()
@@ -623,13 +625,16 @@ app.post('/api/analyze', async (req, res) => {
       if (cookieError) throw new Error('YouTube tạm không dùng được (' + cookieError + ') và chưa có Gemini API key dự phòng — thêm key trong Cài đặt ⚙️.')
       throw new Error('Chưa có Gemini API key')
     }
+    // Mỗi request lấy một điểm bắt đầu khác nhau (tăng con trỏ ngay) để 10 request
+    // chạy song song rải đều trên các key, không cùng dồn vào một key.
+    const startIdx = keyCursor
+    keyCursor = (keyCursor + 1) % keys.length
     let result
     let lastErr
     for (let i = 0; i < keys.length; i++) {
-      const idx = (keyCursor + i) % keys.length
+      const idx = (startIdx + i) % keys.length
       try {
         result = await runWithKey(keys[idx])
-        keyCursor = (idx + 1) % keys.length
         break
       } catch (err) {
         lastErr = err
