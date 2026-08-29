@@ -8,6 +8,7 @@ import { collectSpawnOutput, sendJsonOnce } from './http-utils.js'
 import { loadConfig, saveConfig, getConfigError, configFilePath, getKeys, isQuotaError, analyzeVideo, listModels, normalizeSegments, formatTimestamp, DEFAULT_PROMPT, DEFAULT_MODEL } from './gemini.js'
 import { fetchTranscript } from './transcript.js'
 import { segCountBlock } from '../src/parse.js'
+import { searchChannel, isChannelUrl } from './channel-search.js'
 import { loadCookie, saveCookie, clearCookie, parseCookieInput, checkLogin, probeAsk, analyzeViaCookieAsk, NO_COOKIE_MESSAGE, debugDirPath } from './youtube-cookie.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -394,6 +395,33 @@ app.get('/api/pick-folder', async (req, res) => {
   }
   const folder = await collectSpawnOutput(spawnFolderPicker())
   sendJsonOnce(res, { folder })
+})
+
+// Tìm kiếm / đề xuất clip phim từ một channel YouTube (dùng Gemini key đã config).
+app.post('/api/channel-search', async (req, res) => {
+  const url = String(req.body?.url || '').trim()
+  if (!isChannelUrl(url)) return res.status(400).json({ ok: false, message: 'Link không phải link channel hợp lệ' })
+  const cfg = loadConfig()
+  const keys = getKeys(cfg)
+  if (!keys.length) return res.status(422).json({ ok: false, message: 'Chưa có Gemini API key — vào Cài đặt (⚙️) để nhập' })
+  const sortBy = req.body?.sortBy === 'date' ? 'date' : 'views'
+  const keyword = typeof req.body?.keyword === 'string' ? req.body.keyword.trim().slice(0, 100) : ''
+  // Việc chọn là xếp hạng text -> dùng flash-lite cho nhẹ + đỡ 503
+  const opts = { model: cfg.fastModel || 'gemini-flash-lite-latest', sortBy, keyword, language: cfg.language }
+  // Xoay vòng key nếu key hết lượt
+  let lastErr
+  for (let i = 0; i < keys.length; i++) {
+    const idx = (keyCursor + i) % keys.length
+    try {
+      const result = await searchChannel(url, { ...opts, apiKey: keys[idx] })
+      keyCursor = (idx + 1) % keys.length
+      return res.json({ ok: true, ...result })
+    } catch (err) {
+      lastErr = err
+      if (!isQuotaError(err) || keys.length === 1) break
+    }
+  }
+  res.status(422).json({ ok: false, message: lastErr?.message || 'Tìm kiếm thất bại' })
 })
 
 // Kiểm tra tính hợp lệ của từng Gemini API key (key gửi lên, hoặc key đã lưu nếu không gửi).

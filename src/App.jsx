@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getApiBase, runtime } from './api.js'
-import { isYouTubeUrl, parseVideoId } from './youtube.js'
+import { isYouTubeUrl, parseVideoId, isChannelUrl } from './youtube.js'
 import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText, segmentsToJson } from './parse.js'
 
 export { isYouTubeUrl }
@@ -19,6 +19,8 @@ const MAX_ANALYZE_ROWS = 10
 const SHOW_YOUTUBE_ASK = false
 
 let rowKey = 1
+let chanKey = 1
+const newChan = () => ({ key: chanKey++, url: '' })
 const newRow = (folder = '') => ({ key: rowKey++, url: '', filename: '', folder, aiText: '', segCount: null })
 
 // giây -> "m:ss" / "h:mm:ss" để hiển thị trong ô sửa
@@ -67,6 +69,12 @@ export default function App() {
   const [jsonNames, setJsonNames] = useState({})
   // Các dòng đang chạy "phân tích lại" riêng lẻ
   const [rerunKeys, setRerunKeys] = useState(() => new Set())
+  // ===== Tìm kiếm clip từ channel =====
+  const [channelRows, setChannelRows] = useState([newChan()])
+  const [searchSort, setSearchSort] = useState('views')
+  const [searchKeyword, setSearchKeyword] = useState('')
+  const [searchResults, setSearchResults] = useState({})
+  const [searching, setSearching] = useState(false)
   const pollRef = useRef(null)
 
   const refresh = async () => {
@@ -336,6 +344,87 @@ export default function App() {
     setJsonNames({})
   }
 
+  const addChannel = () => setChannelRows(cs => [...cs, newChan()])
+  const removeChannel = key => setChannelRows(cs => (cs.length === 1 ? cs : cs.filter(c => c.key !== key)))
+  const updateChannel = (key, url) => setChannelRows(cs => cs.map(c => (c.key === key ? { ...c, url } : c)))
+  const pasteChannels = async () => {
+    try {
+      const text = await navigator.clipboard.readText()
+      const found = text.split(/[\s,]+/).filter(x => isChannelUrl(x))
+      if (!found.length) { alert('Clipboard không có link channel nào (dạng youtube.com/channel/... hoặc /@...)'); return }
+      setChannelRows(cs => {
+        const have = new Set(cs.map(c => c.url.trim()).filter(Boolean))
+        const fresh = found.filter(u => !have.has(u))
+        const out = cs.map(c => ({ ...c }))
+        let i = 0
+        for (const c of out) if (!c.url.trim() && i < fresh.length) c.url = fresh[i++]
+        while (i < fresh.length) out.push({ ...newChan(), url: fresh[i++] })
+        return out
+      })
+    } catch { alert('Không đọc được clipboard') }
+  }
+
+  const validChannels = channelRows.filter(c => isChannelUrl(c.url))
+  const runSearch = async () => {
+    if (settings && !settings.hasGeminiKey) {
+      alert('Tìm kiếm clip cần Gemini API key (không dùng cookie). Vào Cài đặt ⚙️ nhập key.')
+      setSettingsOpen(true)
+      return
+    }
+    const targets = channelRows.filter(c => isChannelUrl(c.url))
+    if (!targets.length) return
+    setSearching(true)
+    setSearchResults(rs => { const n = { ...rs }; targets.forEach(c => { n[c.key] = { status: 'searching', url: c.url } }); return n })
+    await Promise.all(targets.map(async c => {
+      try {
+        const res = await fetch(API + '/api/channel-search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: c.url, sortBy: searchSort, keyword: searchKeyword.trim() || undefined }),
+        }).then(r => r.json())
+        if (res.ok) setSearchResults(rs => ({ ...rs, [c.key]: { status: 'done', url: c.url, ...res, selected: new Set() } }))
+        else setSearchResults(rs => ({ ...rs, [c.key]: { status: 'error', url: c.url, message: res.message } }))
+      } catch (e) {
+        setSearchResults(rs => ({ ...rs, [c.key]: { status: 'error', url: c.url, message: e?.message || String(e) } }))
+      }
+    }))
+    setSearching(false)
+  }
+
+  const toggleSearchVideo = (key, url) => setSearchResults(rs => {
+    const r = rs[key]; if (!r) return rs
+    const sel = new Set(r.selected); sel.has(url) ? sel.delete(url) : sel.add(url)
+    return { ...rs, [key]: { ...r, selected: sel } }
+  })
+  const toggleSearchAll = (key, urls) => setSearchResults(rs => {
+    const r = rs[key]; if (!r) return rs
+    const all = urls.every(u => r.selected.has(u))
+    return { ...rs, [key]: { ...r, selected: new Set(all ? [] : urls) } }
+  })
+  const copyUrls = async (tag, urls) => {
+    if (!urls.length) return
+    try { await navigator.clipboard.writeText(urls.join('\n')); setCopiedKey(tag); setTimeout(() => setCopiedKey(k => (k === tag ? null : k)), 2000) }
+    catch { alert(urls.join('\n')) }
+  }
+  // Đưa link sang tab Phân tích (điền vào danh sách link, đổi tab)
+  const sendToAnalyze = urls => {
+    if (!urls.length) return
+    let over = false
+    setRows(rs => {
+      const seen = new Set(rs.map(r => parseVideoId(r.url)).filter(Boolean))
+      const fresh = []
+      for (const u of urls) { const id = parseVideoId(u); if (!id || seen.has(id)) continue; seen.add(id); fresh.push(u) }
+      const out = rs.map(r => ({ ...r }))
+      let i = 0
+      for (const r of out) if (!r.url.trim() && i < fresh.length) r.url = fresh[i++]
+      while (i < fresh.length && out.length < rowLimit) out.push({ ...newRow(defaultFolder), url: fresh[i++] })
+      if (i < fresh.length) over = true
+      return out
+    })
+    setMode('analyze')
+    if (over) setTimeout(() => alert('Tab Phân tích tối đa ' + rowLimit + ' link — đã đưa ' + rowLimit + ' link đầu, phần còn lại lưu/để dành nhé.'), 50)
+  }
+
   const analyzeAll = async () => {
     if (!requireKey()) return
     const targets = rows.filter(r => isYouTubeUrl(r.url) && !dupKeys.has(r.key) && analysis[r.key]?.status !== 'analyzing')
@@ -535,6 +624,7 @@ export default function App() {
             : 'Link dùng chung với tab Phân tích. Chọn nguồn mốc cắt → bấm Phân tích để xem/sửa mốc, hoặc Cắt để chạy luôn ✂️'}
         </p>
         <div className="mode-tabs">
+          <button className={mode === 'search' ? 'active' : ''} onClick={() => setMode('search')}>🔎 Tìm kiếm clip</button>
           <button className={mode === 'analyze' ? 'active' : ''} onClick={() => setMode('analyze')}>🔍 Phân tích</button>
           <button className={mode === 'cut' ? 'active' : ''} onClick={() => setMode('cut')}>✂️ Cắt clip</button>
           <button className="btn-icon gear" title="Sửa prompt hỏi AI" onClick={() => setSettingsOpen(true)}>⚙️</button>
@@ -617,6 +707,7 @@ export default function App() {
         />
       )}
 
+      {mode !== 'search' && (
       <div className={`card${hasRunning ? ' locked' : ''}`}>
         {hasRunning && (
           <div className="locked-note">
@@ -761,7 +852,83 @@ export default function App() {
           </div>
         )}
       </div>
+      )}
 
+      {mode === 'search' && (
+        <>
+        <div className={'card' + (searching ? ' locked' : '')}>
+          {searching && <div className="locked-note">🔎 Đang tìm — chờ AI quét kênh xong nhé</div>}
+          <div className="rows">
+            {channelRows.map((c, i) => {
+              const bad = c.url.trim() !== '' && !isChannelUrl(c.url)
+              return (
+                <div className="row-wrap" key={c.key}>
+                  <div className="row">
+                    <span className="row-num">{i + 1}</span>
+                    <input className={'url' + (bad ? ' invalid' : '')}
+                      placeholder="Link channel: youtube.com/channel/... hoặc youtube.com/@ten"
+                      value={c.url} disabled={searching}
+                      onChange={e => updateChannel(c.key, e.target.value)} />
+                    <button className="btn-icon" title="Xóa" disabled={channelRows.length === 1 || searching} onClick={() => removeChannel(c.key)}>✕</button>
+                  </div>
+                  {bad && <div className="row-error">⚠ Không phải link channel — cần dạng youtube.com/channel/... hoặc youtube.com/@ten</div>}
+                </div>
+              )
+            })}
+          </div>
+          <div className="actions">
+            <button onClick={addChannel} disabled={searching}>＋ Thêm channel</button>
+            <button onClick={pasteChannels} disabled={searching}>📋 Dán nhiều channel</button>
+            <button className="primary" onClick={runSearch} disabled={searching || validChannels.length === 0}>
+              {searching ? '🔎 Đang tìm...' : '🔎 Tìm kiếm (' + validChannels.length + ')'}
+            </button>
+          </div>
+          <div className="search-opts">
+            <span className="json-lbl">Tiêu chí:</span>
+            <label className="set-check"><input type="radio" name="ssort" checked={searchSort === 'views'} onChange={() => setSearchSort('views')} disabled={searching} /><span>Theo lượt xem</span></label>
+            <label className="set-check"><input type="radio" name="ssort" checked={searchSort === 'date'} onChange={() => setSearchSort('date')} disabled={searching} /><span>Theo ngày đăng</span></label>
+            <input className="set-input search-kw" placeholder="Từ khóa (tùy chọn) — tìm phim theo từ khóa" value={searchKeyword} onChange={e => setSearchKeyword(e.target.value)} disabled={searching} />
+          </div>
+          <p className="set-note">AI tự quét kênh, chọn ra các video là phim/truyện phù hợp để cắt clip. Kênh không có phim (thể thao, tin tức...) sẽ báo không phù hợp.</p>
+        </div>
+
+        <div className="search-res">
+          {channelRows.map(c => {
+            const r = searchResults[c.key]
+            if (!r) return null
+            const urls = (r.videos || []).map(v => v.url)
+            return (
+              <div className={'sr-card' + (r.status === 'error' || r.suitable === false ? ' bad' : '')} key={c.key}>
+                <div className="sr-head">
+                  <span className="sr-name">{r.channelName || r.url}</span>
+                  {r.status === 'searching' && <span className="sr-reason">🔎 Đang quét kênh...</span>}
+                  {r.status === 'error' && <span className="sr-reason" style={{ color: '#fda4af' }}>❌ {r.message}</span>}
+                  {r.status === 'done' && <span className="sr-reason">{r.suitable ? ('✓ ' + urls.length + ' clip (quét ' + r.totalScanned + ' video)') : ('⚠ ' + (r.reason || 'Không phù hợp'))}</span>}
+                </div>
+                {r.status === 'done' && urls.length > 0 && (
+                  <>
+                    <div className="sr-tools">
+                      <button onClick={() => toggleSearchAll(c.key, urls)}>{urls.every(u => r.selected.has(u)) ? 'Bỏ chọn hết' : 'Chọn hết'}</button>
+                      <button onClick={() => copyUrls('sc-' + c.key, r.selected.size ? [...r.selected] : urls)}>{copiedKey === ('sc-' + c.key) ? '✓ Đã copy!' : ('📋 Copy ' + (r.selected.size ? 'đã chọn (' + r.selected.size + ')' : 'tất cả'))}</button>
+                      <button className="primary" onClick={() => sendToAnalyze(r.selected.size ? [...r.selected] : urls)}>➡ Đưa sang Phân tích ({r.selected.size || urls.length})</button>
+                    </div>
+                    <div className="sr-list">
+                      {r.videos.map(v => (
+                        <label className="sr-item" key={v.url}>
+                          <input type="checkbox" checked={r.selected.has(v.url)} onChange={() => toggleSearchVideo(c.key, v.url)} />
+                          <a href={v.url} target="_blank" rel="noreferrer">{v.title}</a>
+                          <span className="sr-views">{v.views ? v.views.toLocaleString('vi') + ' views' : ''}{v.publishedText ? ' · ' + v.publishedText : ''}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
+        </>
+      )}
       {mode === 'analyze' && rows.some(r => analysis[r.key]) && (
         <div className="analysis">
           {rows.filter(r => analysis[r.key]?.status === 'ready').length >= 1 && (
@@ -828,13 +995,15 @@ export default function App() {
                         title="Lưu kết quả này thành file .json vào thư mục đã chọn"
                         onClick={() => saveOneJson(r)}
                       >⬇ JSON</button>
-                      <input
-                        className="json-name-edit"
-                        value={jsonNameFor(r.key, rows.filter(x => analysis[x.key]?.status === 'ready').findIndex(x => x.key === r.key) + 1)}
-                        onChange={e => setJsonNames(m => ({ ...m, [r.key]: e.target.value }))}
-                        title="Tên file JSON — sửa được"
-                        placeholder="tên file"
-                      />
+                      <label className="json-name-lbl">File name
+                        <input
+                          className="json-name-edit"
+                          value={jsonNameFor(r.key, rows.filter(x => analysis[x.key]?.status === 'ready').findIndex(x => x.key === r.key) + 1)}
+                          onChange={e => setJsonNames(m => ({ ...m, [r.key]: e.target.value }))}
+                          title="Tên file JSON — sửa được"
+                          placeholder="tên file"
+                        />
+                      </label>
                       <button className="btn-copy-result" onClick={() => copyResult(r.key, pipe)}>
                         {copiedKey === r.key ? '✓ Đã copy!' : '📋 Copy kết quả'}
                       </button>

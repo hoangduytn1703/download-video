@@ -36,3 +36,16 @@ export function suggestedFilename(customName, title, ext = 'mp4') {
   const base = sanitizeFilename(customName) || sanitizeFilename(title) || 'video'
   return `${base}.${ext}`
 }
+
+// Link channel hợp lệ: /channel/UCxxx, /@handle, /c/ten, /user/ten (kèm hoặc không đuôi tab)
+export function isChannelUrl(url) {
+  try {
+    const u = new URL(String(url).trim())
+    const host = u.hostname.replace(/^www\./, '')
+    if (!['youtube.com', 'm.youtube.com'].includes(host)) return false
+    const p = u.pathname.replace(/\/+$/, '').replace(/\/(videos|featured|streams|shorts|playlists|community)$/i, '')
+    return /^\/channel\/UC[\w-]{20,}$/.test(p) || /^\/@[\w.-]+$/.test(p) || /^\/c\/[^/]+$/.test(p) || /^\/user\/[^/]+$/.test(p)
+  } catch {
+    return false
+  }
+}
