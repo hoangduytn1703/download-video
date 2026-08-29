@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url'
 import { collectSpawnOutput, sendJsonOnce } from './http-utils.js'
 import { loadConfig, saveConfig, getConfigError, configFilePath, getKeys, isQuotaError, analyzeVideo, listModels, normalizeSegments, formatTimestamp, DEFAULT_PROMPT, DEFAULT_MODEL } from './gemini.js'
 import { fetchTranscript } from './transcript.js'
-import { analyzeViaYoutubeAsk, NO_ASK_MESSAGE } from './youtube-ask.js'
+import { loadCookie, saveCookie, clearCookie, parseCookieInput, checkLogin, probeAsk, analyzeViaCookieAsk, NO_COOKIE_MESSAGE, debugDirPath } from './youtube-cookie.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT) || 3001
@@ -405,6 +405,9 @@ app.get('/api/settings', (req, res) => {
     keyCount: getKeys(cfg).length,
     configError: getConfigError(),
     configFile: configFilePath(),
+    hasYoutubeCookie: Boolean(loadCookie()),
+    youtubeAccount: cfg.youtubeAccount || '',
+    analysisSource: cfg.analysisSource === 'youtube' ? 'youtube' : 'gemini',
     prompt: cfg.prompt || '',
     appendFormatRules: cfg.appendFormatRules !== false, // mặc định bật
     model: cfg.model || DEFAULT_MODEL,
@@ -426,6 +429,7 @@ app.post('/api/settings', (req, res) => {
   if (typeof req.body?.appendFormatRules === 'boolean') patch.appendFormatRules = req.body.appendFormatRules
   if (req.body?.speedMode === 'fast' || req.body?.speedMode === 'quality') patch.speedMode = req.body.speedMode
   if (typeof req.body?.language === 'string' && req.body.language.trim()) patch.language = req.body.language.trim().slice(0, 40)
+  if (req.body?.analysisSource === 'gemini' || req.body?.analysisSource === 'youtube') patch.analysisSource = req.body.analysisSource
   const cfg = saveConfig(patch)
   res.json({
     ok: true,
@@ -433,12 +437,62 @@ app.post('/api/settings', (req, res) => {
     keyCount: getKeys(cfg).length,
     configError: getConfigError(),
     configFile: configFilePath(),
+    hasYoutubeCookie: Boolean(loadCookie()),
+    youtubeAccount: cfg.youtubeAccount || '',
+    analysisSource: cfg.analysisSource === 'youtube' ? 'youtube' : 'gemini',
     prompt: cfg.prompt || '',
     appendFormatRules: cfg.appendFormatRules !== false,
     model: cfg.model || DEFAULT_MODEL,
     speedMode: cfg.speedMode === 'quality' ? 'quality' : 'fast',
     language: cfg.language || 'Tây Ban Nha',
   })
+})
+
+// ===== YouTube cá nhân: cookie đăng nhập để dùng "Hỏi về video này" =====
+// Cookie KHÔNG bao giờ được trả về client — chỉ báo có/không và tên tài khoản.
+app.post('/api/youtube-cookie', async (req, res) => {
+  try {
+    const { cookie, names } = parseCookieInput(req.body?.cookie)
+    saveCookie(cookie)
+    const login = await checkLogin(cookie)
+    if (!login.ok) {
+      clearCookie()
+      return res.status(422).json({ ok: false, message: login.message })
+    }
+    saveConfig({ youtubeAccount: login.accountName })
+    res.json({ ok: true, accountName: login.accountName, cookieCount: names.length })
+  } catch (err) {
+    res.status(422).json({ ok: false, message: err?.message || String(err) })
+  }
+})
+
+app.get('/api/youtube-cookie', async (req, res) => {
+  const cookie = loadCookie()
+  if (!cookie) return res.json({ ok: false, message: NO_COOKIE_MESSAGE })
+  try {
+    const login = await checkLogin(cookie)
+    if (login.ok) saveConfig({ youtubeAccount: login.accountName })
+    res.json(login)
+  } catch (err) {
+    res.status(422).json({ ok: false, message: err?.message || String(err) })
+  }
+})
+
+app.delete('/api/youtube-cookie', (req, res) => {
+  clearCookie()
+  saveConfig({ youtubeAccount: '' })
+  res.json({ ok: true })
+})
+
+// Dò xem tài khoản có thấy panel Hỏi Gemini trên video này không (lưu chi tiết vào ask-debug)
+app.get('/api/youtube-ask/probe', async (req, res) => {
+  try {
+    const url = String(req.query.url || '')
+    if (!isYouTubeUrl(url)) return res.status(400).json({ ok: false, message: 'Cần link YouTube hợp lệ' })
+    res.json({ ok: true, ...(await probeAsk(url)) })
+  } catch (err) {
+    res.status(422).json({ ok: false, message: err?.message || String(err), debugDir: debugDirPath() })
+  }
 })
 
 // ===== Tự cập nhật app (chỉ có khi chạy trong app desktop bản cài đặt) =====
@@ -478,14 +532,12 @@ app.post('/api/analyze', async (req, res) => {
   const cfg = loadConfig()
   try {
     const source = req.body?.source
-    if (source === 'youtube' || source === 'browser') {
-      try {
-        const result = await analyzeViaYoutubeAsk(url, { prompt: cfg.prompt, language: cfg.language })
-        return res.json({ ok: true, ...result })
-      } catch (err) {
-        if ((err?.message || '') !== NO_ASK_MESSAGE) throw err
-        console.warn('[analyze] YouTube Ask missing, falling back to transcript')
-      }
+    const promptOverrideEarly = typeof req.body?.prompt === 'string' && req.body.prompt.trim() ? req.body.prompt.trim() : null
+    if (source === 'youtube' || (source === 'app' && cfg.analysisSource === 'youtube')) {
+      // Hỏi Gemini ngay trên YouTube bằng cookie cá nhân — không dùng Gemini API, không tốn token.
+      // Lỗi thì báo thẳng, không âm thầm đổi sang Gemini API.
+      const result = await analyzeViaCookieAsk(url, { prompt: promptOverrideEarly || cfg.prompt, language: cfg.language })
+      return res.json({ ok: true, ...result, via: 'youtube-ask' })
     }
     let transcript = null
     try {

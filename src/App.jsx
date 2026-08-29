@@ -249,6 +249,13 @@ export default function App() {
   // Thiếu key thì giải thích rõ rồi mới mở Cài đặt — trước đây Settings tự bật lên
   // mà không nói gì, người dùng tưởng app lỗi.
   const requireKey = () => {
+    // Nguồn "Hỏi Gemini trên YouTube" dùng cookie cá nhân, không cần Gemini key
+    if (settings?.analysisSource === 'youtube') {
+      if (settings.hasYoutubeCookie) return true
+      alert('Bạn đang chọn nguồn "Hỏi Gemini trên YouTube" nhưng chưa dán cookie — mở Cài đặt ⚙️, mục YouTube cá nhân.')
+      setSettingsOpen(true)
+      return false
+    }
     if (settings && !settings.hasGeminiKey) {
       const why = settings.configError
         ? settings.configError
@@ -528,7 +535,11 @@ export default function App() {
       {settingsOpen && (
         <SettingsModal
           settings={settings}
-          onClose={() => setSettingsOpen(false)}
+          probeUrl={usableRows[0]?.url || ''}
+          onClose={() => {
+            setSettingsOpen(false)
+            fetch(API + '/api/settings').then(r => r.json()).then(setSettings).catch(() => {})
+          }}
           onSaved={s => {
             setSettings(s)
             setSettingsOpen(false)
@@ -986,9 +997,18 @@ const LANGUAGES = ['Tây Ban Nha', 'Anh', 'Việt', 'Bồ Đào Nha', 'Pháp', '
 // Danh sách dự phòng khi chưa có key / không gọi được Google
 const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-flash-latest', 'gemini-pro-latest']
 
-function SettingsModal({ settings, onClose, onSaved }) {
+function SettingsModal({ settings, onClose, onSaved, probeUrl }) {
   const [keyDraft, setKeyDraft] = useState('')
   const [clearKeys, setClearKeys] = useState(false)
+  // Nguồn phân tích + cookie YouTube cá nhân (thử nghiệm)
+  const [srcDraft, setSrcDraft] = useState(settings?.analysisSource === 'youtube' ? 'youtube' : 'gemini')
+  const [cookieDraft, setCookieDraft] = useState('')
+  const [cookieInfo, setCookieInfo] = useState({ has: Boolean(settings?.hasYoutubeCookie), account: settings?.youtubeAccount || '' })
+  const [cookieMsg, setCookieMsg] = useState(null)
+  const [cookieBusy, setCookieBusy] = useState(false)
+  const [probeUrlDraft, setProbeUrlDraft] = useState(probeUrl || '')
+  const [probeBusy, setProbeBusy] = useState(false)
+  const [probeOut, setProbeOut] = useState('')
   const [promptDraft, setPromptDraft] = useState(settings?.prompt || DEFAULT_CUT_PROMPT)
   const [langDraft, setLangDraft] = useState(settings?.language || 'Tây Ban Nha')
   const [speedDraft, setSpeedDraft] = useState(settings?.speedMode === 'quality' ? 'quality' : 'fast')
@@ -1007,6 +1027,74 @@ function SettingsModal({ settings, onClose, onSaved }) {
       })
       .catch(() => {})
   }, [])
+
+  // Cookie chỉ đi một chiều lên server local; server không bao giờ trả cookie về
+  const submitCookie = async () => {
+    setCookieBusy(true)
+    setCookieMsg(null)
+    try {
+      const res = await fetch(API + '/api/youtube-cookie', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cookie: cookieDraft }),
+      })
+      const d = await res.json()
+      if (!res.ok || !d.ok) throw new Error(d.message || 'HTTP ' + res.status)
+      setCookieInfo({ has: true, account: d.accountName })
+      setCookieDraft('')
+      setCookieMsg({ ok: true, text: '✓ Đăng nhập OK: ' + d.accountName + ' (' + d.cookieCount + ' cookie)' })
+    } catch (e) {
+      setCookieMsg({ ok: false, text: e?.message || String(e) })
+    } finally {
+      setCookieBusy(false)
+    }
+  }
+
+  const checkCookie = async () => {
+    setCookieBusy(true)
+    setCookieMsg(null)
+    try {
+      const d = await fetch(API + '/api/youtube-cookie').then(r => r.json())
+      if (d.ok) setCookieInfo({ has: true, account: d.accountName })
+      setCookieMsg({ ok: d.ok, text: d.ok ? '✓ Cookie còn sống: ' + d.accountName : d.message })
+    } catch (e) {
+      setCookieMsg({ ok: false, text: e?.message || String(e) })
+    } finally {
+      setCookieBusy(false)
+    }
+  }
+
+  const removeCookie = async () => {
+    if (!confirm('Xóa cookie YouTube khỏi máy này?')) return
+    await fetch(API + '/api/youtube-cookie', { method: 'DELETE' }).catch(() => {})
+    setCookieInfo({ has: false, account: '' })
+    setCookieMsg({ ok: true, text: 'Đã xóa cookie' })
+  }
+
+  const importCookieFile = e => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => setCookieDraft(String(reader.result || ''))
+    reader.onerror = () => setCookieMsg({ ok: false, text: 'Không đọc được file' })
+    reader.readAsText(file)
+  }
+
+  // Dò xem tài khoản có thấy panel Hỏi Gemini không — kết quả tóm tắt + file chi tiết trong ask-debug
+  const runProbe = async () => {
+    setProbeBusy(true)
+    setProbeOut('')
+    try {
+      const res = await fetch(API + '/api/youtube-ask/probe?url=' + encodeURIComponent(probeUrlDraft.trim()))
+      const d = await res.json()
+      setProbeOut(JSON.stringify(d, null, 2))
+    } catch (e) {
+      setProbeOut('Lỗi: ' + (e?.message || e))
+    } finally {
+      setProbeBusy(false)
+    }
+  }
 
   // Nhập key từ file .txt — mỗi dòng một key (nhận cả phẩy / khoảng trắng)
   const importKeysFile = e => {
@@ -1045,6 +1133,7 @@ function SettingsModal({ settings, onClose, onSaved }) {
           model: modelDraft,
           speedMode: speedDraft,
           language: langDraft,
+          analysisSource: srcDraft,
         }),
       })
       const d = await res.json()
@@ -1126,6 +1215,58 @@ function SettingsModal({ settings, onClose, onSaved }) {
         <select className="set-input" value={modelDraft} onChange={e => setModelDraft(e.target.value)}>
           {models.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
+
+        <label className="set-label">Nguồn phân tích</label>
+        <div className="speed-options">
+          <label className="set-check">
+            <input type="radio" name="asrc" checked={srcDraft === 'gemini'} onChange={() => setSrcDraft('gemini')} />
+            <span>✨ <b>Gemini API</b> — dùng key ở trên, tốn token theo lượt</span>
+          </label>
+          <label className="set-check">
+            <input type="radio" name="asrc" checked={srcDraft === 'youtube'} onChange={() => setSrcDraft('youtube')} />
+            <span>▶ <b>Hỏi Gemini ngay trên YouTube</b> bằng cookie cá nhân — thử nghiệm, không tốn token</span>
+          </label>
+        </div>
+
+        <label className="set-label">
+          YouTube cá nhân — cookie đăng nhập
+          {cookieInfo.has && ' (đang dùng: ' + (cookieInfo.account || 'đã đăng nhập') + ')'}
+        </label>
+        <textarea
+          className="set-input set-keys"
+          rows={3}
+          placeholder={'Dán giá trị header "cookie" từ DevTools (F12 → Network → chọn request bất kỳ tới youtube.com → Request Headers → cookie), hoặc dán nội dung file cookies.txt'}
+          value={cookieDraft}
+          onChange={e => setCookieDraft(e.target.value)}
+        />
+        <div className="set-row">
+          <label className="set-file" title="File cookies.txt (Netscape) hoặc JSON từ extension">
+            📄 Nhập cookies.txt
+            <input type="file" accept=".txt,.json,text/plain,application/json" hidden onChange={importCookieFile} />
+          </label>
+          <button className="set-reset" onClick={submitCookie} disabled={!cookieDraft.trim() || cookieBusy}>
+            {cookieBusy ? 'Đang kiểm tra...' : '🔐 Lưu & kiểm tra đăng nhập'}
+          </button>
+          {cookieInfo.has && <button className="set-reset" onClick={checkCookie} disabled={cookieBusy}>🔄 Kiểm tra lại</button>}
+          {cookieInfo.has && <button className="set-reset" onClick={removeCookie} disabled={cookieBusy}>🗑 Xóa cookie</button>}
+        </div>
+        {cookieMsg && <p className={'set-note' + (cookieMsg.ok ? ' ok' : ' set-error')}>{cookieMsg.text}</p>}
+        <p className="set-note">
+          Cookie là chìa khóa tài khoản Google của bạn: chỉ lưu trên máy này (file <code>youtube-cookie.txt</code> trong thư mục cấu hình),
+          chỉ gửi tới youtube.com, không hiện lại ở đâu. Chỉ dùng cho tài khoản cá nhân, đừng phát cho team.
+        </p>
+        <div className="set-row">
+          <input
+            className="set-input"
+            placeholder="Link video để dò panel Hỏi Gemini"
+            value={probeUrlDraft}
+            onChange={e => setProbeUrlDraft(e.target.value)}
+          />
+          <button className="set-reset" onClick={runProbe} disabled={!cookieInfo.has || !probeUrlDraft.trim() || probeBusy}>
+            {probeBusy ? 'Đang dò...' : '🔎 Dò panel Hỏi Gemini'}
+          </button>
+        </div>
+        {probeOut && <pre className="probe-out">{probeOut}</pre>}
 
         {error && <p className="set-error">{error}</p>}
 
