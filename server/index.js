@@ -396,6 +396,27 @@ app.get('/api/pick-folder', async (req, res) => {
   sendJsonOnce(res, { folder })
 })
 
+// Kiểm tra tính hợp lệ của từng Gemini API key (key gửi lên, hoặc key đã lưu nếu không gửi).
+// Trả về key ĐÃ CHE (không lộ nguyên key) + trạng thái.
+app.post('/api/check-keys', async (req, res) => {
+  const provided = Array.isArray(req.body?.keys)
+    ? req.body.keys.map(k => String(k || '').trim()).filter(Boolean)
+    : null
+  const keys = provided && provided.length ? [...new Set(provided)] : getKeys(loadConfig())
+  const mask = k => (k.length > 14 ? k.slice(0, 8) + '…' + k.slice(-4) : k.slice(0, 4) + '…')
+  const results = await Promise.all(keys.map(async k => {
+    try {
+      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?key=' + encodeURIComponent(k))
+      if (r.ok) return { key: mask(k), ok: true, message: 'Hợp lệ' }
+      const d = await r.json().catch(() => ({}))
+      return { key: mask(k), ok: false, message: (d.error?.status || ('HTTP ' + r.status)) + ': ' + (d.error?.message || '').slice(0, 90) }
+    } catch (e) {
+      return { key: mask(k), ok: false, message: 'Lỗi mạng: ' + (e?.message || e) }
+    }
+  }))
+  res.json({ ok: true, results })
+})
+
 // Lưu nhiều file .json thẳng vào thư mục (không qua hộp thoại "Save as" của trình duyệt).
 // items: [{ filename, json }] — mỗi phần tử ghi thành <filename>.json.
 app.post('/api/save-json', (req, res) => {

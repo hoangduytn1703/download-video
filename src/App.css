@@ -676,3 +676,11 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-
 .json-lbl { color: #a9adc4; font-size: 13px; }
 .json-name { width: 90px; }
 .json-folder { flex: 1; min-width: 160px; }
+
+/* Kết quả kiểm tra API key */
+.key-checks { list-style: none; padding: 0; margin: 8px 0 0; font-size: 12.5px; }
+.key-checks li { padding: 3px 0; }
+.key-checks li.ok { color: #86efac; }
+.key-checks li.bad { color: #fda4af; }
+.key-checks li.sum { color: #a9adc4; margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 6px; }
+.key-checks code { background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 5px; }

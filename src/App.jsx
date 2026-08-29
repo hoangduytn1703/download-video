@@ -1102,6 +1102,8 @@ const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-flash-l
 function SettingsModal({ settings, onClose, onSaved, probeUrl }) {
   const [keyDraft, setKeyDraft] = useState('')
   const [clearKeys, setClearKeys] = useState(false)
+  const [keyChecks, setKeyChecks] = useState(null)
+  const [checkingKeys, setCheckingKeys] = useState(false)
   const [cookieDraft, setCookieDraft] = useState('')
   const [cookieInfo, setCookieInfo] = useState({ has: Boolean(settings?.hasYoutubeCookie), account: settings?.youtubeAccount || '' })
   const [cookieMsg, setCookieMsg] = useState(null)
@@ -1197,6 +1199,24 @@ function SettingsModal({ settings, onClose, onSaved, probeUrl }) {
   }
 
   // Nhập key từ file .txt — mỗi dòng một key (nhận cả phẩy / khoảng trắng)
+  const checkKeys = async () => {
+    setCheckingKeys(true)
+    setKeyChecks(null)
+    try {
+      const typed = keyDraft.split(/[\s,]+/).map(k => k.trim()).filter(k => k.length >= 12)
+      const res = await fetch(API + '/api/check-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(typed.length ? { keys: typed } : {}),
+      }).then(r => r.json())
+      setKeyChecks(res.results || [])
+    } catch (e) {
+      setKeyChecks([{ key: '', ok: false, message: e?.message || String(e) }])
+    } finally {
+      setCheckingKeys(false)
+    }
+  }
+
   const importKeysFile = e => {
     const file = e.target.files?.[0]
     e.target.value = ''
@@ -1308,7 +1328,24 @@ function SettingsModal({ settings, onClose, onSaved, probeUrl }) {
               {clearKeys ? '✓ Sẽ xóa hết key khi Lưu' : '🗑 Xóa hết key đã lưu'}
             </button></>
           )}
+          {(settings?.keyCount > 0 || keyDraft.trim()) && (
+            <> <button className="set-reset" onClick={checkKeys} disabled={checkingKeys}>
+              {checkingKeys ? 'Đang kiểm tra...' : '🔑 Kiểm tra key'}
+            </button></>
+          )}
         </p>
+        {keyChecks && (
+          <ul className="key-checks">
+            {keyChecks.map((c, i) => (
+              <li key={i} className={c.ok ? 'ok' : 'bad'}>
+                {c.ok ? '✓' : '✗'} <code>{c.key || 'key'}</code> — {c.message}
+              </li>
+            ))}
+            {keyChecks.length > 1 && (
+              <li className="sum">{keyChecks.filter(c => c.ok).length}/{keyChecks.length} key hợp lệ</li>
+            )}
+          </ul>
+        )}
 
         <label className="set-label">Model</label>
         <select className="set-input" value={modelDraft} onChange={e => setModelDraft(e.target.value)}>
