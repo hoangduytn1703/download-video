@@ -422,21 +422,33 @@ app.post('/api/check-keys', async (req, res) => {
 app.post('/api/save-json', (req, res) => {
   const folder = String(req.body?.folder || '').trim() || defaultFolder
   const items = Array.isArray(req.body?.items) ? req.body.items : []
+  const overwrite = req.body?.overwrite === true
   if (!items.length) return res.status(400).json({ ok: false, message: 'Không có kết quả nào để lưu' })
+  // Tên file đích cho từng item (đã chuẩn hóa + đuôi .json)
+  const targets = items.map(it => {
+    const base = sanitizeFilename(String(it?.filename || 'ket-qua')) || 'ket-qua'
+    return { file: base.toLowerCase().endsWith('.json') ? base : base + '.json', json: it?.json ?? {} }
+  })
+  // Chưa cho ghi đè thì báo trước những file đã tồn tại (tránh đè mất data lần trước)
+  if (!overwrite) {
+    const conflicts = []
+    for (const t of targets) {
+      try { if (fs.existsSync(path.join(folder, t.file))) conflicts.push(t.file) } catch {}
+    }
+    if (conflicts.length) return res.json({ ok: false, conflict: true, conflicts, folder })
+  }
   try {
     fs.mkdirSync(folder, { recursive: true })
   } catch (e) {
     return res.status(422).json({ ok: false, message: 'Không tạo được thư mục: ' + e.message })
   }
   const saved = []
-  for (const it of items) {
-    const base = sanitizeFilename(String(it?.filename || 'ket-qua')) || 'ket-qua'
-    const file = base.toLowerCase().endsWith('.json') ? base : base + '.json'
+  for (const t of targets) {
     try {
-      fs.writeFileSync(path.join(folder, file), JSON.stringify(it?.json ?? {}, null, 4), 'utf8')
-      saved.push(file)
+      fs.writeFileSync(path.join(folder, t.file), JSON.stringify(t.json, null, 4), 'utf8')
+      saved.push(t.file)
     } catch (e) {
-      return res.status(422).json({ ok: false, message: 'Lỗi ghi ' + file + ': ' + e.message, saved, folder })
+      return res.status(422).json({ ok: false, message: 'Lỗi ghi ' + t.file + ': ' + e.message, saved, folder })
     }
   }
   res.json({ ok: true, saved, folder })

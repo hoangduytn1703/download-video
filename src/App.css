@@ -684,3 +684,9 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-
 .key-checks li.bad { color: #fda4af; }
 .key-checks li.sum { color: #a9adc4; margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 6px; }
 .key-checks code { background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 5px; }
+
+/* Nút xóa tất cả kết quả */
+.btn-clear-all { border-color: rgba(244,63,94,0.4); color: #fda4af; }
+.btn-clear-all:hover:not(:disabled) { background: rgba(244,63,94,0.15); }
+/* Ô sửa tên file JSON trên từng card */
+.json-name-edit { width: 120px; padding: 6px 9px; font-size: 12.5px; }

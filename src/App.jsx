@@ -63,6 +63,8 @@ export default function App() {
   const [jsonPrefix, setJsonPrefix] = useState(() => String(new Date().getDate()).padStart(2, '0'))
   const [jsonFolder, setJsonFolder] = useState('')
   const [savingJson, setSavingJson] = useState(false)
+  // Tên file JSON cho từng kết quả — mặc định tự render, user sửa được (ghi đè)
+  const [jsonNames, setJsonNames] = useState({})
   // Các dòng đang chạy "phân tích lại" riêng lẻ
   const [rerunKeys, setRerunKeys] = useState(() => new Set())
   const pollRef = useRef(null)
@@ -238,27 +240,43 @@ export default function App() {
 
   // Tải kết quả ra file .json đúng định dạng công cụ dựng clip của team
   // Ghi thẳng nhiều/1 file JSON vào thư mục đã chọn (không mở hộp thoại "Save as")
-  const writeJsonFiles = async items => {
+  const writeJsonFiles = async (items, overwrite = false) => {
     const res = await fetch(`${API}/api/save-json`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ folder: jsonFolder, items }),
+      body: JSON.stringify({ folder: jsonFolder, items, overwrite }),
     }).then(r => r.json())
     return res
   }
 
-  // Lưu riêng 1 kết quả — cùng thư mục + kiểu tên với "Lưu tất cả JSON" (prefix-stt)
+  // Tên file JSON của một kết quả: ưu tiên tên user đã sửa, không thì tự render <prefix>-<stt>
+  const jsonNameFor = (key, stt) =>
+    jsonNames[key] ?? ((jsonPrefix.trim() || String(new Date().getDate()).padStart(2, '0')) + '-' + String(stt).padStart(2, '0'))
+
+  // Lưu — nếu thư mục đã có file cùng tên thì HỎI trước, đổi tên hoặc ghi đè (tránh đè mất data)
+  const doSaveJson = async (items, label) => {
+    let res = await writeJsonFiles(items, false)
+    if (res.conflict) {
+      const ok = confirm(
+        'Thư mục lưu đã có sẵn ' + res.conflicts.length + ' file cùng tên:\n' +
+        res.conflicts.slice(0, 10).join('\n') + (res.conflicts.length > 10 ? '\n...' : '') +
+        '\n\nGhi đè lên file cũ? (Bấm Hủy để đổi tên rồi lưu lại — tránh mất dữ liệu lần trước)'
+      )
+      if (!ok) return
+      res = await writeJsonFiles(items, true)
+    }
+    if (res.ok) alert('Đã lưu ' + res.saved.length + ' file JSON vào:\n' + res.folder)
+    else alert('Lỗi lưu JSON: ' + res.message)
+  }
+
+  // Lưu riêng 1 kết quả — dùng tên đang hiển thị (đã sửa hoặc tự render)
   const saveOneJson = async r => {
     const ready = rows.filter(x => analysis[x.key]?.status === 'ready')
     const stt = ready.findIndex(x => x.key === r.key) + 1 || 1
-    const prefix = jsonPrefix.trim() || String(new Date().getDate()).padStart(2, '0')
-    const items = [{
-      filename: `${prefix}-${String(stt).padStart(2, '0')}`,
+    await doSaveJson([{
+      filename: jsonNameFor(r.key, stt),
       json: segmentsToJson(r.url, analysis[r.key].name, analysis[r.key].segments),
-    }]
-    const res = await writeJsonFiles(items)
-    if (res.ok) alert('Đã lưu ' + res.saved[0] + ' vào:\n' + res.folder)
-    else alert('Lỗi lưu JSON: ' + res.message)
+    }])
   }
 
   const copyResult = async (key, text) => {
@@ -293,19 +311,29 @@ export default function App() {
   const saveAllJson = async () => {
     const ready = rows.filter(r => analysis[r.key]?.status === 'ready')
     if (!ready.length) return
-    const prefix = (jsonPrefix.trim() || String(new Date().getDate()).padStart(2, '0'))
     const items = ready.map((r, i) => ({
-      filename: prefix + '-' + String(i + 1).padStart(2, '0'),
+      filename: jsonNameFor(r.key, i + 1),
       json: segmentsToJson(r.url, analysis[r.key].name, analysis[r.key].segments),
     }))
     setSavingJson(true)
     try {
-      const res = await writeJsonFiles(items)
-      if (res.ok) alert('Đã lưu ' + res.saved.length + ' file JSON vào:\n' + res.folder)
-      else alert('Lỗi lưu JSON: ' + res.message)
+      await doSaveJson(items)
     } finally {
       setSavingJson(false)
     }
+  }
+
+  // Xóa toàn bộ kết quả phân tích (link vẫn giữ). Đang xử lý thì cảnh báo.
+  const clearAllAnalysis = () => {
+    const busy = analyzingCount > 0 || hasRunning
+    const msg = busy
+      ? 'ĐANG XỬ LÝ! Xóa hết kết quả bây giờ? Các video đang phân tích/tải sẽ mất kết quả trả về.'
+      : 'Xóa tất cả kết quả phân tích? (Link vẫn giữ nguyên trong danh sách)'
+    if (!confirm(msg)) return
+    setAnalysis({})
+    setDrafts({})
+    setTableOpen(new Set())
+    setJsonNames({})
   }
 
   const analyzeAll = async () => {
@@ -756,6 +784,7 @@ export default function App() {
               <button className="primary" onClick={saveAllJson} disabled={savingJson}>
                 {savingJson ? 'Đang lưu...' : '⬇ Lưu tất cả JSON (' + rows.filter(r => analysis[r.key]?.status === 'ready').length + ')'}
               </button>
+              <button className="btn-clear-all" onClick={clearAllAnalysis} title="Xóa tất cả kết quả (link vẫn giữ)">🗑 Xóa tất cả</button>
               <button
                 onClick={() => copyResult('ALL',
                   rows
@@ -799,6 +828,13 @@ export default function App() {
                         title="Lưu kết quả này thành file .json vào thư mục đã chọn"
                         onClick={() => saveOneJson(r)}
                       >⬇ JSON</button>
+                      <input
+                        className="json-name-edit"
+                        value={jsonNameFor(r.key, rows.filter(x => analysis[x.key]?.status === 'ready').findIndex(x => x.key === r.key) + 1)}
+                        onChange={e => setJsonNames(m => ({ ...m, [r.key]: e.target.value }))}
+                        title="Tên file JSON — sửa được"
+                        placeholder="tên file"
+                      />
                       <button className="btn-copy-result" onClick={() => copyResult(r.key, pipe)}>
                         {copiedKey === r.key ? '✓ Đã copy!' : '📋 Copy kết quả'}
                       </button>
