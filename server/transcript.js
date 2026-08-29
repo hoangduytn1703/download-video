@@ -143,13 +143,16 @@ async function fetchTranscriptFromPage(url) {
   return formatTranscript(cues)
 }
 
-function runYtdlpSubs(ytdlpBin, url, dir) {
+function runYtdlpSubs(ytdlpBin, url, dir, langs = 'vi,en,es') {
   return new Promise((resolve, reject) => {
     const proc = spawn(ytdlpBin, [
       '--skip-download',
       '--write-auto-subs',
-      '--sub-langs', 'vi,en,es',
+      '--sub-langs', langs,
       '--sub-format', 'json3',
+      // YouTube chặn client web mặc định ở bước tải phụ đề (429 / trả rỗng);
+      // web_safari vẫn lấy được nên để yt-dlp thử thêm client này.
+      '--extractor-args', 'youtube:player_client=default,web_safari',
       '--no-warnings',
       '-P', dir,
       '-o', '%(id)s',
@@ -178,8 +181,14 @@ async function fetchTranscriptViaYtdlp(url, ytdlpBin) {
   if (!ytdlpBin) throw new Error('Chưa có yt-dlp')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytcap-'))
   try {
-    await runYtdlpSubs(ytdlpBin, url, dir)
-    const files = fs.readdirSync(dir).filter(f => /\.(json3|vtt)$/i.test(f))
+    // YouTube hay trả 429 cho từng ngôn ngữ riêng lẻ — thử cả nhóm trước, hụt thì
+    // thử lần lượt từng thứ tiếng để không mất công phân tích bằng cách xem video (đắt hơn ~8 lần).
+    let files = []
+    for (const langs of ['vi,en,es', 'en', 'vi', 'es']) {
+      await runYtdlpSubs(ytdlpBin, url, dir, langs)
+      files = fs.readdirSync(dir).filter(f => /\.(json3|vtt)$/i.test(f))
+      if (files.length) break
+    }
     if (!files.length) throw new Error('yt-dlp không tải được phụ đề')
     const rank = f => {
       const n = f.toLowerCase()
