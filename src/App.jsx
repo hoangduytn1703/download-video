@@ -274,22 +274,13 @@ export default function App() {
   // Thiếu key thì giải thích rõ rồi mới mở Cài đặt — trước đây Settings tự bật lên
   // mà không nói gì, người dùng tưởng app lỗi.
   const requireKey = () => {
-    // Nguồn "Hỏi Gemini trên YouTube" dùng cookie cá nhân, không cần Gemini key
-    if (settings?.analysisSource === 'youtube') {
-      if (settings.hasYoutubeCookie) return true
-      alert('Bạn đang chọn nguồn "Hỏi Gemini trên YouTube" nhưng chưa dán cookie — mở Cài đặt ⚙️, mục YouTube cá nhân.')
-      setSettingsOpen(true)
-      return false
-    }
-    if (settings && !settings.hasGeminiKey) {
-      const why = settings.configError
-        ? settings.configError
-        : 'Máy này chưa có Gemini API key nên chưa phân tích được.'
-      alert([why, '', 'Mở Cài đặt ⚙️ và dán API key (lấy miễn phí tại aistudio.google.com/apikey), bấm Lưu là dùng được ngay.'].join('\n'))
-      setSettingsOpen(true)
-      return false
-    }
-    return true
+    if (!settings) return true
+    // Cần ít nhất một nguồn: cookie YouTube (ưu tiên) hoặc Gemini API key
+    if (settings.hasYoutubeCookie || settings.hasGeminiKey) return true
+    const why = settings.configError ? settings.configError + '\n\n' : ''
+    alert(why + 'Chưa có nguồn phân tích. Dán cookie YouTube (miễn phí token) HOẶC nhập Gemini API key trong Cài đặt ⚙️.')
+    setSettingsOpen(true)
+    return false
   }
 
   const pickJsonFolder = async () => {
@@ -530,15 +521,15 @@ export default function App() {
         </div>
       )}
 
-      {settings && (!settings.hasGeminiKey || settings.configError) && (
+      {settings && ((!settings.hasGeminiKey && !settings.hasYoutubeCookie) || settings.configError) && (
         <div className="error-banner">
           <span className="warning-icon">🔑</span>
           <span>
             {settings.configError
               ? settings.configError
-              : 'Chưa có Gemini API key trên máy này nên chưa phân tích được. Bấm nút bên cạnh để nhập key (lấy miễn phí tại aistudio.google.com/apikey) — key chỉ lưu trên máy này.'}
+              : 'Chưa có nguồn phân tích. Dán cookie YouTube (miễn phí token) hoặc nhập Gemini API key — bấm nút bên cạnh để mở Cài đặt.'}
           </span>
-          <button className="btn-reset" onClick={() => setSettingsOpen(true)}>⚙️ Nhập API key</button>
+          <button className="btn-reset" onClick={() => setSettingsOpen(true)}>⚙️ Mở Cài đặt</button>
         </div>
       )}
 
@@ -1111,8 +1102,6 @@ const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-flash-l
 function SettingsModal({ settings, onClose, onSaved, probeUrl }) {
   const [keyDraft, setKeyDraft] = useState('')
   const [clearKeys, setClearKeys] = useState(false)
-  // Nguồn phân tích + cookie YouTube cá nhân (thử nghiệm)
-  const [srcDraft, setSrcDraft] = useState(settings?.analysisSource === 'youtube' ? 'youtube' : 'gemini')
   const [cookieDraft, setCookieDraft] = useState('')
   const [cookieInfo, setCookieInfo] = useState({ has: Boolean(settings?.hasYoutubeCookie), account: settings?.youtubeAccount || '' })
   const [cookieMsg, setCookieMsg] = useState(null)
@@ -1244,7 +1233,6 @@ function SettingsModal({ settings, onClose, onSaved, probeUrl }) {
           model: modelDraft,
           speedMode: speedDraft,
           language: langDraft,
-          analysisSource: srcDraft,
         }),
       })
       const d = await res.json()
@@ -1326,18 +1314,6 @@ function SettingsModal({ settings, onClose, onSaved, probeUrl }) {
         <select className="set-input" value={modelDraft} onChange={e => setModelDraft(e.target.value)}>
           {models.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
-
-        <label className="set-label">Nguồn phân tích</label>
-        <div className="speed-options">
-          <label className="set-check">
-            <input type="radio" name="asrc" checked={srcDraft === 'gemini'} onChange={() => setSrcDraft('gemini')} />
-            <span>✨ <b>Gemini API</b> — dùng key ở trên, tốn token theo lượt</span>
-          </label>
-          <label className="set-check">
-            <input type="radio" name="asrc" checked={srcDraft === 'youtube'} onChange={() => setSrcDraft('youtube')} />
-            <span>▶ <b>Hỏi Gemini ngay trên YouTube</b> bằng cookie cá nhân — thử nghiệm, không tốn token</span>
-          </label>
-        </div>
 
         <label className="set-label">
           YouTube cá nhân — cookie đăng nhập

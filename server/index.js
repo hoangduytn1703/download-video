@@ -433,7 +433,6 @@ app.get('/api/settings', (req, res) => {
     configFile: configFilePath(),
     hasYoutubeCookie: Boolean(loadCookie()),
     youtubeAccount: cfg.youtubeAccount || '',
-    analysisSource: cfg.analysisSource === 'youtube' ? 'youtube' : 'gemini',
     prompt: cfg.prompt || '',
     appendFormatRules: cfg.appendFormatRules !== false, // mặc định bật
     model: cfg.model || DEFAULT_MODEL,
@@ -455,7 +454,6 @@ app.post('/api/settings', (req, res) => {
   if (typeof req.body?.appendFormatRules === 'boolean') patch.appendFormatRules = req.body.appendFormatRules
   if (req.body?.speedMode === 'fast' || req.body?.speedMode === 'quality') patch.speedMode = req.body.speedMode
   if (typeof req.body?.language === 'string' && req.body.language.trim()) patch.language = req.body.language.trim().slice(0, 40)
-  if (req.body?.analysisSource === 'gemini' || req.body?.analysisSource === 'youtube') patch.analysisSource = req.body.analysisSource
   const cfg = saveConfig(patch)
   res.json({
     ok: true,
@@ -465,7 +463,6 @@ app.post('/api/settings', (req, res) => {
     configFile: configFilePath(),
     hasYoutubeCookie: Boolean(loadCookie()),
     youtubeAccount: cfg.youtubeAccount || '',
-    analysisSource: cfg.analysisSource === 'youtube' ? 'youtube' : 'gemini',
     prompt: cfg.prompt || '',
     appendFormatRules: cfg.appendFormatRules !== false,
     model: cfg.model || DEFAULT_MODEL,
@@ -562,11 +559,17 @@ app.post('/api/analyze', async (req, res) => {
     // Số đoạn mong muốn cho riêng link này (2–20). Ngoài khoảng thì coi như AI tự đề xuất.
     const segCount = Number.isFinite(req.body?.segCount) && req.body.segCount >= 2 && req.body.segCount <= 20 ? Math.round(req.body.segCount) : null
     const seg = segCount ? segCountBlock(segCount) : ''
-    if (source === 'youtube' || (source === 'app' && cfg.analysisSource === 'youtube')) {
-      // Hỏi Gemini ngay trên YouTube bằng cookie cá nhân — không dùng Gemini API, không tốn token.
-      // Lỗi thì báo thẳng, không âm thầm đổi sang Gemini API.
-      const result = await analyzeViaCookieAsk(url, { prompt: (promptOverrideEarly || cfg.prompt) + seg, language: cfg.language })
-      return res.json({ ok: true, ...result, via: 'youtube-ask' })
+    // Mặc định: có cookie YouTube thì "Hỏi Gemini trên YouTube" trước (miễn phí token).
+    // YouTube siết / không trả được -> tự quay sang Gemini API để luôn có kết quả.
+    let cookieError = null
+    if (loadCookie()) {
+      try {
+        const result = await analyzeViaCookieAsk(url, { prompt: (promptOverrideEarly || cfg.prompt) + seg, language: cfg.language })
+        return res.json({ ok: true, ...result, via: 'youtube-ask' })
+      } catch (err) {
+        cookieError = err?.message || String(err)
+        console.warn('[analyze] YouTube-Ask lỗi, chuyển Gemini API:', cookieError)
+      }
     }
     let transcript = null
     try {
@@ -575,8 +578,7 @@ app.post('/api/analyze', async (req, res) => {
       console.warn('[analyze] transcript failed, falling back to video:', err?.message || err)
     }
     // Tab Cắt có thể gửi prompt riêng cho lần cắt đó (không đụng prompt lưu trong Cài đặt)
-    const promptOverride = typeof req.body?.prompt === 'string' && req.body.prompt.trim() ? req.body.prompt.trim() : null
-    const prompt = (promptOverride || cfg.prompt) + seg
+    const prompt = (promptOverrideEarly || cfg.prompt) + seg
     // Chế độ Nhanh (mặc định): có phụ đề thì phân tích bằng model lite (~1-3s thay vì ~25s).
     // Lite lỗi hoặc trả kết quả rỗng thì tự chạy lại bằng model chính — không hỏng luồng.
     const useFast = transcript && cfg.speedMode !== 'quality'
@@ -596,7 +598,10 @@ app.post('/api/analyze', async (req, res) => {
     // Xoay vòng key: key nào báo hết lượt/bị chặn thì thử key kế tiếp.
     // Bắt đầu từ key đang tới lượt để chia đều tải giữa các key.
     const keys = getKeys(cfg)
-    if (!keys.length) throw new Error('Chưa có Gemini API key')
+    if (!keys.length) {
+      if (cookieError) throw new Error('YouTube tạm không dùng được (' + cookieError + ') và chưa có Gemini API key dự phòng — thêm key trong Cài đặt ⚙️.')
+      throw new Error('Chưa có Gemini API key')
+    }
     let result
     let lastErr
     for (let i = 0; i < keys.length; i++) {
@@ -612,7 +617,7 @@ app.post('/api/analyze', async (req, res) => {
       }
     }
     if (!result) throw lastErr || new Error('Phân tích thất bại')
-    res.json({ ok: true, ...result })
+    res.json({ ok: true, ...result, via: 'gemini', fellBack: Boolean(cookieError) })
   } catch (err) {
     res.status(422).json({ ok: false, message: err?.message || String(err) })
   }
