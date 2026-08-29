@@ -184,17 +184,18 @@ export default function App() {
         return
       }
       setRows(rs => {
-        const filled = [...rs]
+        // Tạo object dòng MỚI, không sửa thẳng object cũ — nếu không, React StrictMode
+        // gọi updater 2 lần sẽ thấy dòng đầu đã có link rồi append lại → nhân đôi link đầu.
+        const out = rs.map(r => ({ ...r }))
         let i = 0
-        // fill empty rows first, then append
-        for (const r of filled) {
-          if (!r.url && i < urls.length) r.url = urls[i++]
+        for (const r of out) {
+          if (!r.url.trim() && i < urls.length) r.url = urls[i++]
         }
-        while (i < urls.length && filled.length < rowLimit) filled.push({ ...newRow(defaultFolder), url: urls[i++] })
+        while (i < urls.length && out.length < rowLimit) out.push({ ...newRow(defaultFolder), url: urls[i++] })
         if (i < urls.length) {
-          alert(`Tab này nhận tối đa ${rowLimit} link mỗi lần — đã lấy ${filled.length} link đầu.`)
+          alert(`Tab này nhận tối đa ${rowLimit} link mỗi lần — đã lấy ${out.length} link đầu.`)
         }
-        return [...filled]
+        return out
       })
     } catch {
       alert('Không đọc được clipboard')
