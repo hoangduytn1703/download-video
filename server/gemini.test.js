@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseTimestamp, formatTimestamp, normalizeSegments, salvageConfig } from './gemini.js'
+import { parseTimestamp, formatTimestamp, normalizeSegments, salvageConfig, getKeys, isQuotaError } from './gemini.js'
 
 test('parseTimestamp reads mm:ss, h:mm:ss and plain seconds', () => {
   assert.equal(parseTimestamp('0:10'), 10)
@@ -51,4 +51,26 @@ test('file hỏng nặng không cứu được thì trả object rỗng, không 
 
 test('không nhận key rỗng khi cứu config', () => {
   assert.deepEqual(salvageConfig('{"geminiKey": "", "model": "gemini-3.6-flash"'), { model: 'gemini-3.6-flash' })
+})
+
+test('getKeys gộp danh sách key mới và key cũ, bỏ trùng và rỗng', () => {
+  assert.deepEqual(getKeys({ geminiKeys: ['a', 'b'], geminiKey: 'c' }), ['a', 'b', 'c'])
+  // key cũ trùng với key trong danh sách thì chỉ tính một lần
+  assert.deepEqual(getKeys({ geminiKeys: ['a'], geminiKey: 'a' }), ['a'])
+  assert.deepEqual(getKeys({ geminiKeys: [' a ', '', null, 'b'] }), ['a', 'b'])
+  // cấu hình cũ chỉ có geminiKey vẫn dùng được
+  assert.deepEqual(getKeys({ geminiKey: 'x' }), ['x'])
+  assert.deepEqual(getKeys({}), [])
+})
+
+test('isQuotaError chỉ báo đổi key khi key thật sự hết lượt/không dùng được', () => {
+  // lỗi đã gắn cờ từ tầng gọi API
+  assert.equal(isQuotaError({ keyExhausted: true }), true)
+  assert.equal(isQuotaError({ status: 429 }), true)
+  assert.equal(isQuotaError({ status: 403 }), true)
+  // thông báo tiếng Việt (đã dịch) vẫn nhận ra
+  assert.equal(isQuotaError(new Error('Gemini từ chối: API key không hợp lệ')), true)
+  // lỗi không liên quan đến key thì đổi key cũng vô ích
+  assert.equal(isQuotaError(new Error('Không đọc được kết quả AI')), false)
+  assert.equal(isQuotaError({ status: 500 }), false)
 })

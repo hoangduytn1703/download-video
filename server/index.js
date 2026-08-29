@@ -5,7 +5,7 @@ import fs from 'fs'
 import os from 'os'
 import { fileURLToPath } from 'url'
 import { collectSpawnOutput, sendJsonOnce } from './http-utils.js'
-import { loadConfig, saveConfig, getConfigError, configFilePath, analyzeVideo, listModels, normalizeSegments, formatTimestamp, DEFAULT_PROMPT, DEFAULT_MODEL } from './gemini.js'
+import { loadConfig, saveConfig, getConfigError, configFilePath, getKeys, isQuotaError, analyzeVideo, listModels, normalizeSegments, formatTimestamp, DEFAULT_PROMPT, DEFAULT_MODEL } from './gemini.js'
 import { fetchTranscript } from './transcript.js'
 import { analyzeViaYoutubeAsk, NO_ASK_MESSAGE } from './youtube-ask.js'
 
@@ -129,6 +129,8 @@ const capOf = job => (job.type === 'cut' ? MAX_CONCURRENT_LIMIT : maxConcurrent)
 const takeSlot = job => { activeByType[typeOf(job)]++ }
 const freeSlot = job => { activeByType[typeOf(job)] = Math.max(0, activeByType[typeOf(job)] - 1) }
 let paused = false
+// Key đang tới lượt dùng — xoay vòng để chia đều tải giữa các API key
+let keyCursor = 0
 let updating = false
 let updateResult = null
 
@@ -399,7 +401,8 @@ app.get('/api/pick-folder', async (req, res) => {
 app.get('/api/settings', (req, res) => {
   const cfg = loadConfig()
   res.json({
-    hasGeminiKey: Boolean(cfg.geminiKey),
+    hasGeminiKey: getKeys(cfg).length > 0,
+    keyCount: getKeys(cfg).length,
     configError: getConfigError(),
     configFile: configFilePath(),
     prompt: cfg.prompt || '',
@@ -413,6 +416,11 @@ app.get('/api/settings', (req, res) => {
 app.post('/api/settings', (req, res) => {
   const patch = {}
   if (typeof req.body?.geminiKey === 'string' && req.body.geminiKey.trim()) patch.geminiKey = req.body.geminiKey.trim()
+  // Nhiều key một lần: mỗi dòng / phẩy / khoảng trắng một key. Mảng rỗng = xóa hết key.
+  if (Array.isArray(req.body?.geminiKeys)) {
+    patch.geminiKeys = req.body.geminiKeys.map(k => String(k || '').trim()).filter(Boolean)
+    keyCursor = 0
+  }
   if (typeof req.body?.prompt === 'string') patch.prompt = req.body.prompt.trim()
   if (typeof req.body?.model === 'string' && req.body.model.trim()) patch.model = req.body.model.trim()
   if (typeof req.body?.appendFormatRules === 'boolean') patch.appendFormatRules = req.body.appendFormatRules
@@ -421,7 +429,8 @@ app.post('/api/settings', (req, res) => {
   const cfg = saveConfig(patch)
   res.json({
     ok: true,
-    hasGeminiKey: Boolean(cfg.geminiKey),
+    hasGeminiKey: getKeys(cfg).length > 0,
+    keyCount: getKeys(cfg).length,
     configError: getConfigError(),
     configFile: configFilePath(),
     prompt: cfg.prompt || '',
@@ -455,7 +464,7 @@ app.post('/api/app-update/:action', (req, res) => {
 // Danh sách model Gemini khả dụng cho key đang lưu — để dropdown không bao giờ lỗi thời
 app.get('/api/models', async (req, res) => {
   try {
-    const models = await listModels(loadConfig().geminiKey)
+    const models = await listModels(getKeys(loadConfig())[0])
     res.json({ ok: true, models })
   } catch (err) {
     res.status(422).json({ ok: false, message: err?.message || String(err) })
@@ -486,21 +495,42 @@ app.post('/api/analyze', async (req, res) => {
     }
     // Tab Cắt có thể gửi prompt riêng cho lần cắt đó (không đụng prompt lưu trong Cài đặt)
     const promptOverride = typeof req.body?.prompt === 'string' && req.body.prompt.trim() ? req.body.prompt.trim() : null
-    const base = { apiKey: cfg.geminiKey, prompt: promptOverride || cfg.prompt, transcript, language: cfg.language }
+    const prompt = promptOverride || cfg.prompt
     // Chế độ Nhanh (mặc định): có phụ đề thì phân tích bằng model lite (~1-3s thay vì ~25s).
     // Lite lỗi hoặc trả kết quả rỗng thì tự chạy lại bằng model chính — không hỏng luồng.
     const useFast = transcript && cfg.speedMode !== 'quality'
+    const runWithKey = async apiKey => {
+      const base = { apiKey, prompt, transcript, language: cfg.language }
+      if (useFast) {
+        try {
+          return await analyzeVideo(url, { ...base, model: cfg.fastModel || 'gemini-flash-lite-latest' })
+        } catch (err) {
+          if (isQuotaError(err)) throw err // key hết lượt: để vòng ngoài đổi key
+          console.warn('[analyze] fast model failed, retrying with main model:', err?.message || err)
+        }
+      }
+      return analyzeVideo(url, { ...base, model: cfg.model })
+    }
+
+    // Xoay vòng key: key nào báo hết lượt/bị chặn thì thử key kế tiếp.
+    // Bắt đầu từ key đang tới lượt để chia đều tải giữa các key.
+    const keys = getKeys(cfg)
+    if (!keys.length) throw new Error('Chưa có Gemini API key')
     let result
-    if (useFast) {
+    let lastErr
+    for (let i = 0; i < keys.length; i++) {
+      const idx = (keyCursor + i) % keys.length
       try {
-        result = await analyzeVideo(url, { ...base, model: cfg.fastModel || 'gemini-flash-lite-latest' })
+        result = await runWithKey(keys[idx])
+        keyCursor = (idx + 1) % keys.length
+        break
       } catch (err) {
-        console.warn('[analyze] fast model failed, retrying with main model:', err?.message || err)
+        lastErr = err
+        if (!isQuotaError(err) || keys.length === 1) throw err
+        console.warn(`[analyze] key #${idx + 1} hết lượt, thử key kế tiếp:`, err?.message || err)
       }
     }
-    if (!result) {
-      result = await analyzeVideo(url, { ...base, model: cfg.model })
-    }
+    if (!result) throw lastErr || new Error('Phân tích thất bại')
     res.json({ ok: true, ...result })
   } catch (err) {
     res.status(422).json({ ok: false, message: err?.message || String(err) })

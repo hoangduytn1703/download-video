@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText } from './parse.js'
+import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText, segmentsToJson } from './parse.js'
 
 test('đọc đúng chuỗi pipe thật của team (từ Gemini)', () => {
   const text =
@@ -186,4 +186,27 @@ test('sửa kết quả sau khi phân tích: text pipe copy ra đổi theo (tên
   assert.equal(items[0].segments.length, 2)
   assert.equal(items[0].segments[0].start, '0:45')
   assert.equal(items[0].segments[0].title, 'El secreto del dragón')
+})
+
+test('segmentsToJson xuất đúng định dạng công cụ dựng clip của team', () => {
+  const out = segmentsToJson('https://www.youtube.com/watch?v=E0qwJC4TgFc', 'El precio oculto tras la fama', [
+    { start: '1:50', end: '3:20', title: '¿Sacrificio extremo por ser modelo?' },
+    { start: 818, end: 900, title: 'Colapsó en plena sesión de fotos' },
+  ])
+  assert.equal(out.url, 'https://www.youtube.com/watch?v=E0qwJC4TgFc')
+  assert.equal(out.title_top, 'El precio oculto tras la fama')
+  assert.deepEqual([out.font_choice, out.text_color, out.bg_color], ['1', '1', '1'])
+  // phút luôn 2 chữ số, kể cả khi mốc gốc là "1:50" hay số giây
+  assert.deepEqual(out.cuts[0], { start: '01:50', end: '03:20', title_bottom: 'PARTE 1: ¿Sacrificio extremo por ser modelo?' })
+  assert.deepEqual(out.cuts[1], { start: '13:38', end: '15:00', title_bottom: 'PARTE 2: Colapsó en plena sesión de fotos' })
+})
+
+test('segmentsToJson không nhân đôi nhãn PARTE khi AI đã tự đánh số', () => {
+  const out = segmentsToJson('u', 'n', [{ start: '0:10', end: '1:20', title: 'PARTE 1: Ya tiene etiqueta' }])
+  assert.equal(out.cuts[0].title_bottom, 'PARTE 1: Ya tiene etiqueta')
+})
+
+test('segmentsToJson xử lý video dài hơn 1 tiếng', () => {
+  const out = segmentsToJson('u', 'n', [{ start: 3725, end: 3800, title: 'Sau 1 tiếng' }])
+  assert.equal(out.cuts[0].start, '1:02:05')
 })

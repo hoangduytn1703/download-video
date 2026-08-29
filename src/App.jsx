@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { getApiBase, runtime } from './api.js'
 import { isYouTubeUrl, parseVideoId } from './youtube.js'
-import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText } from './parse.js'
+import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText, segmentsToJson } from './parse.js'
 
 export { isYouTubeUrl }
 
@@ -56,8 +56,6 @@ export default function App() {
   // Đếm ngược nghỉ 5 giây sau mỗi lượt phân tích — chống bấm dồn dập tốn token
   const [cooldown, setCooldown] = useState(0)
   const [copiedKey, setCopiedKey] = useState(null) // key dòng vừa copy kết quả, hoặc 'ALL' / 'link:<key>'
-  // Các dòng đang mở bảng sửa kết quả ở tab Phân tích
-  const [editKeys, setEditKeys] = useState(() => new Set())
   // Các dòng đang chạy "phân tích lại" riêng lẻ
   const [rerunKeys, setRerunKeys] = useState(() => new Set())
   const pollRef = useRef(null)
@@ -224,6 +222,19 @@ export default function App() {
     await refresh()
   }
 
+  // Tải kết quả ra file .json đúng định dạng công cụ dựng clip của team
+  const saveJson = (suggestedName, data) => {
+    const safe = String(suggestedName || 'ket-qua').replace(/[<>:"/\\|?*]+/g, '').trim() || 'ket-qua'
+    const blob = new Blob([JSON.stringify(data, null, 4)], { type: 'application/json;charset=utf-8' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = safe.toLowerCase().endsWith('.json') ? safe : safe + '.json'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+  }
+
   const copyResult = async (key, text) => {
     try {
       await navigator.clipboard.writeText(text)
@@ -234,15 +245,6 @@ export default function App() {
     }
   }
 
-
-  // Mở/đóng bảng sửa mốc cắt của một dòng ở tab Phân tích
-  const toggleEdit = key =>
-    setEditKeys(s => {
-      const next = new Set(s)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
 
   // Thiếu key thì giải thích rõ rồi mới mở Cài đặt — trước đây Settings tự bật lên
   // mà không nói gì, người dùng tưởng app lỗi.
@@ -681,6 +683,14 @@ export default function App() {
           {rows.filter(r => analysis[r.key]?.status === 'ready').length > 1 && (
             <div className="results-tools">
               <button
+                title="Tải tất cả kết quả ra một file .json (mảng các video)"
+                onClick={() => saveJson('ket-qua-phan-tich',
+                  rows
+                    .filter(r => analysis[r.key]?.status === 'ready')
+                    .map(r => segmentsToJson(r.url, analysis[r.key].name, analysis[r.key].segments))
+                )}
+              >⬇ Tải tất cả .json</button>
+              <button
                 onClick={() => copyResult('ALL',
                   rows
                     .filter(r => analysis[r.key]?.status === 'ready')
@@ -706,7 +716,7 @@ export default function App() {
                   >{copiedKey === `link:${r.key}` ? '✓' : '🔗'}</button>
                   {a.status === 'analyzing' && <span className="ana-status">🔍 Đang phân tích, thường 5–10 giây...</span>}
                   {a.status === 'error' && <span className="ana-status err">❌ {a.error}</span>}
-                  {a.status === 'ready' && <span className="ana-status ok">✓ {a.segments.length} đoạn</span>}
+                  {a.status === 'ready' && <span className="ana-status ok">✓ {a.segments.length} đoạn — sửa trực tiếp bên dưới</span>}
                   {(a.status === 'ready' || a.status === 'error') && (
                     <button
                       className="btn-icon"
@@ -718,10 +728,10 @@ export default function App() {
                   {a.status === 'ready' && (
                     <>
                       <button
-                        className={`btn-icon${editKeys.has(r.key) ? ' on' : ''}`}
-                        title={editKeys.has(r.key) ? 'Xong, đóng bảng sửa' : 'Sửa mốc thời gian / tiêu đề'}
-                        onClick={() => toggleEdit(r.key)}
-                      >{editKeys.has(r.key) ? '✓ Xong' : '✏️ Sửa'}</button>
+                        className="btn-icon"
+                        title="Tải kết quả này ra file .json (định dạng công cụ dựng clip)"
+                        onClick={() => saveJson(a.name || 'ket-qua', segmentsToJson(r.url, a.name, a.segments))}
+                      >⬇ JSON</button>
                       <button className="btn-copy-result" onClick={() => copyResult(r.key, pipe)}>
                         {copiedKey === r.key ? '✓ Đã copy!' : '📋 Copy kết quả'}
                       </button>
@@ -732,34 +742,21 @@ export default function App() {
                   )}
                 </div>
                 {a.status === 'analyzing' && <div className="bar"><div className="bar-fill ana-pulse" style={{ width: '100%' }} /></div>}
-                {a.status === 'ready' && editKeys.has(r.key) && (
-                  <>
-                    <input
-                      className="ana-name-edit"
-                      value={a.name || ''}
-                      placeholder="Tên video (AI đặt) — sửa được"
-                      onChange={e => patchAnalysis(r.key, { name: e.target.value })}
-                    />
-                    <table className="seg-table">
-                      <thead>
-                        <tr><th></th><th>Bắt đầu</th><th>Kết thúc</th><th>Tiêu đề clip</th><th></th></tr>
-                      </thead>
-                      <tbody>
-                        {a.segments.map((s, i) => (
-                          <tr key={i}>
-                            <td className="seg-num">P{i + 1}</td>
-                            <td><input className="seg-time" value={s.start} onChange={e => updateSegment(r.key, i, { start: e.target.value })} /></td>
-                            <td><input className="seg-time" value={s.end} onChange={e => updateSegment(r.key, i, { end: e.target.value })} /></td>
-                            <td><input className="seg-title" value={s.title} onChange={e => updateSegment(r.key, i, { title: e.target.value })} /></td>
-                            <td><button className="btn-icon" title="Bỏ đoạn này" onClick={() => removeSegment(r.key, i)}>✕</button></td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    <button className="seg-add" onClick={() => addSegment(r.key)}>＋ Thêm đoạn</button>
-                  </>
+                {a.status === 'ready' && (
+                  <SegmentEditor
+                    entry={a}
+                    onName={name => patchAnalysis(r.key, { name })}
+                    onSegment={(i, patch) => updateSegment(r.key, i, patch)}
+                    onRemove={i => removeSegment(r.key, i)}
+                    onAdd={() => addSegment(r.key)}
+                  />
                 )}
-                {a.status === 'ready' && <pre className="pipe-text">{pipe}</pre>}
+                {a.status === 'ready' && (
+                  <details className="pipe-details">
+                    <summary>Xem text kết quả (đúng bản sẽ được copy)</summary>
+                    <pre className="pipe-text">{pipe}</pre>
+                  </details>
+                )}
               </div>
             )
           })}
@@ -776,7 +773,7 @@ export default function App() {
                   <span className="ana-name" title={r.url}>{a.name || r.filename || r.url}</span>
                   {a.status === 'analyzing' && <span className="ana-status">🤖 Gemini đang xem video, chờ 30–90 giây...</span>}
                   {a.status === 'error' && <span className="ana-status err">❌ {a.error}</span>}
-                  {a.status === 'ready' && <span className="ana-status ok">✓ {a.segments.length} đoạn — sửa được trước khi cắt</span>}
+                  {a.status === 'ready' && <span className="ana-status ok">✓ {a.segments.length} đoạn — muốn sửa thì qua tab Phân tích</span>}
                   {(a.status === 'ready' || a.status === 'error') && (
                     <button
                       className="btn-icon"
@@ -800,27 +797,7 @@ export default function App() {
                   )}
                 </div>
                 {a.status === 'analyzing' && <div className="bar"><div className="bar-fill ana-pulse" style={{ width: '100%' }} /></div>}
-                {a.status === 'ready' && (
-                  <>
-                    <table className="seg-table">
-                      <thead>
-                        <tr><th></th><th>Bắt đầu</th><th>Kết thúc</th><th>Tiêu đề clip</th><th></th></tr>
-                      </thead>
-                      <tbody>
-                        {a.segments.map((s, i) => (
-                          <tr key={i}>
-                            <td className="seg-num">P{i + 1}</td>
-                            <td><input className="seg-time" value={s.start} onChange={e => updateSegment(r.key, i, { start: e.target.value })} /></td>
-                            <td><input className="seg-time" value={s.end} onChange={e => updateSegment(r.key, i, { end: e.target.value })} /></td>
-                            <td><input className="seg-title" value={s.title} onChange={e => updateSegment(r.key, i, { title: e.target.value })} /></td>
-                            <td><button className="btn-icon" title="Bỏ đoạn này" onClick={() => removeSegment(r.key, i)}>✕</button></td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    <button className="seg-add" onClick={() => addSegment(r.key)}>＋ Thêm đoạn</button>
-                  </>
-                )}
+                {a.status === 'ready' && <SegmentEditor entry={a} readOnly />}
               </div>
             )
           })}
@@ -887,6 +864,40 @@ export default function App() {
 
       <footer className="footer">© 2026 - code by Nguyễn Hoàng Duy</footer>
     </div>
+  )
+}
+
+// Bảng mốc cắt dùng chung 2 tab: tab Phân tích cho sửa (tên, mốc, tiêu đề, bỏ/thêm đoạn),
+// tab Cắt chỉ xem lại — dữ liệu là một, sửa bên Phân tích thì bên Cắt thấy ngay.
+function SegmentEditor({ entry, readOnly = false, onName, onSegment, onRemove, onAdd }) {
+  return (
+    <>
+      {!readOnly && (
+        <input
+          className="ana-name-edit"
+          value={entry.name || ''}
+          placeholder="Tên video (AI đặt) — sửa được"
+          onChange={e => onName(e.target.value)}
+        />
+      )}
+      <table className={'seg-table' + (readOnly ? ' readonly' : '')}>
+        <thead>
+          <tr><th></th><th>Bắt đầu</th><th>Kết thúc</th><th>Tiêu đề clip</th>{!readOnly && <th></th>}</tr>
+        </thead>
+        <tbody>
+          {entry.segments.map((seg, i) => (
+            <tr key={i}>
+              <td className="seg-num">P{i + 1}</td>
+              <td><input className="seg-time" value={seg.start} readOnly={readOnly} onChange={e => onSegment?.(i, { start: e.target.value })} /></td>
+              <td><input className="seg-time" value={seg.end} readOnly={readOnly} onChange={e => onSegment?.(i, { end: e.target.value })} /></td>
+              <td><input className="seg-title" value={seg.title} readOnly={readOnly} onChange={e => onSegment?.(i, { title: e.target.value })} /></td>
+              {!readOnly && <td><button className="btn-icon" title="Bỏ đoạn này" onClick={() => onRemove(i)}>✕</button></td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {!readOnly && <button className="seg-add" onClick={onAdd}>＋ Thêm đoạn</button>}
+    </>
   )
 }
 
@@ -977,6 +988,7 @@ const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-flash-l
 
 function SettingsModal({ settings, onClose, onSaved }) {
   const [keyDraft, setKeyDraft] = useState('')
+  const [clearKeys, setClearKeys] = useState(false)
   const [promptDraft, setPromptDraft] = useState(settings?.prompt || DEFAULT_CUT_PROMPT)
   const [langDraft, setLangDraft] = useState(settings?.language || 'Tây Ban Nha')
   const [speedDraft, setSpeedDraft] = useState(settings?.speedMode === 'quality' ? 'quality' : 'fast')
@@ -996,6 +1008,24 @@ function SettingsModal({ settings, onClose, onSaved }) {
       .catch(() => {})
   }, [])
 
+  // Nhập key từ file .txt — mỗi dòng một key (nhận cả phẩy / khoảng trắng)
+  const importKeysFile = e => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      // bỏ dòng ghi chú / chữ lẻ: key Gemini luôn là chuỗi dài, không có khoảng trắng
+      const found = String(reader.result || '').split(/[\s,]+/).map(k => k.trim()).filter(k => k.length >= 20)
+      if (!found.length) { setError('File không có dòng nào giống API key'); return }
+      setError('')
+      setKeyDraft(d => [...new Set([...d.split(/[\s,]+/).filter(Boolean), ...found])].join('\n'))
+      setClearKeys(false)
+    }
+    reader.onerror = () => setError('Không đọc được file')
+    reader.readAsText(file)
+  }
+
   const save = async () => {
     setSaving(true)
     setError('')
@@ -1004,7 +1034,12 @@ function SettingsModal({ settings, onClose, onSaved }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          geminiKey: keyDraft.trim() || undefined,
+          // mỗi dòng (hoặc phẩy/khoảng trắng) một key; để trống thì giữ key cũ
+          geminiKeys: clearKeys
+            ? []
+            : (keyDraft.split(/[\s,]+/).map(k => k.trim()).filter(Boolean).length
+              ? keyDraft.split(/[\s,]+/).map(k => k.trim()).filter(Boolean)
+              : undefined),
           prompt: promptDraft,
           appendFormatRules: true,
           model: modelDraft,
@@ -1061,14 +1096,31 @@ function SettingsModal({ settings, onClose, onSaved }) {
           <p className="set-error">⚠ {settings.configError}<br />File cài đặt: <code>{settings.configFile}</code></p>
         )}
 
-        <label className="set-label">Gemini API key</label>
-        <input
-          type="password"
-          className="set-input"
-          placeholder={settings?.hasGeminiKey ? 'Đã lưu key ✓ — nhập key mới nếu muốn thay' : 'Dán API key (lấy tại aistudio.google.com/apikey)'}
+        <label className="set-label">
+          Gemini API key {settings?.keyCount > 0 && `(đang lưu ${settings.keyCount} key)`}
+        </label>
+        <textarea
+          className="set-input set-keys"
+          rows={4}
+          placeholder={settings?.hasGeminiKey
+            ? 'Đã lưu key ✓ — dán key mới vào đây nếu muốn thay hoặc thêm'
+            : 'Dán API key (lấy tại aistudio.google.com/apikey)\nNhiều key thì mỗi dòng một key'}
           value={keyDraft}
           onChange={e => setKeyDraft(e.target.value)}
         />
+        <p className="set-note">
+          Dán được <b>nhiều key một lúc</b> — mỗi dòng một key. App tự xoay vòng, key nào hết lượt
+          thì tự chuyển sang key kế tiếp. Để trống là giữ nguyên các key đã lưu.
+          <label className="set-file" title="Chọn file .txt, mỗi dòng một key">
+            📄 Nhập từ file .txt
+            <input type="file" accept=".txt,text/plain" hidden onChange={importKeysFile} />
+          </label>
+          {settings?.keyCount > 0 && (
+            <> <button className="set-reset set-clear-keys" onClick={() => { setKeyDraft(''); setClearKeys(true) }}>
+              {clearKeys ? '✓ Sẽ xóa hết key khi Lưu' : '🗑 Xóa hết key đã lưu'}
+            </button></>
+          )}
+        </p>
 
         <label className="set-label">Model</label>
         <select className="set-input" value={modelDraft} onChange={e => setModelDraft(e.target.value)}>

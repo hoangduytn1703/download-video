@@ -610,3 +610,20 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-
   font-size: 14px;
 }
 .btn-dl-one { padding: 6px 12px; font-size: 12.5px; flex-shrink: 0; }
+
+/* Ô nhập nhiều API key (mỗi dòng một key) */
+.set-keys { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; resize: vertical; }
+.set-clear-keys { display: inline-block; margin-left: 4px; padding: 3px 10px; font-size: 12px; }
+
+
+/* Text kết quả thu gọn dưới bảng sửa — mở ra khi cần xem đúng bản sẽ copy */
+.pipe-details { margin-top: 10px; }
+.pipe-details summary { cursor: pointer; font-size: 13px; color: #a9adc4; user-select: none; }
+.pipe-details summary:hover { color: #e9d5ff; }
+.pipe-details .pipe-text { margin-top: 8px; }
+/* Tab Cắt chỉ xem lại — ô bị khóa nhìn nhạt hơn */
+.seg-table.readonly input { opacity: 0.75; cursor: default; }
+.seg-table.readonly input:focus { border-color: rgba(255, 255, 255, 0.12); box-shadow: none; }
+/* Nút chọn file .txt chứa API key */
+.set-file { display: inline-block; margin-left: 6px; padding: 3px 10px; font-size: 12px; border: 1px solid rgba(255, 255, 255, 0.13); border-radius: 8px; cursor: pointer; background: rgba(255, 255, 255, 0.07); }
+.set-file:hover { background: rgba(255, 255, 255, 0.13); }

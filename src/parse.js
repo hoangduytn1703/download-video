@@ -138,6 +138,43 @@ export function segmentsToPipeText(name, segments) {
   return parts.join(' | ')
 }
 
+// Xuất kết quả ra JSON theo đúng định dạng công cụ dựng clip của team đang nhận.
+// Mốc thời gian luôn "mm:ss" (hoặc "h:mm:ss" nếu dài hơn 1 tiếng) — 2 chữ số cho phút.
+export function segmentsToJson(url, name, segments, options = {}) {
+  const pad = n => String(n).padStart(2, '0')
+  const toClock = v => {
+    // đã là chuỗi mm:ss thì chỉ chuẩn hoá lại cho đủ 2 chữ số
+    if (typeof v !== 'number') {
+      const parts = String(v || '').trim().split(':').map(x => Number(x) || 0)
+      if (parts.length === 0) return '00:00'
+      const sec = parts.reduce((acc, p) => acc * 60 + p, 0)
+      return toClock(sec)
+    }
+    const s2 = Math.max(0, Math.round(v))
+    const h = Math.floor(s2 / 3600)
+    const m = Math.floor((s2 % 3600) / 60)
+    return h ? `${h}:${pad(m)}:${pad(s2 % 60)}` : `${pad(m)}:${pad(s2 % 60)}`
+  }
+  const { fontChoice = '1', textColor = '1', bgColor = '1', partLabel = 'PARTE' } = options
+  return {
+    url: String(url || ''),
+    title_top: String(name || '').trim() || 'Video',
+    font_choice: String(fontChoice),
+    text_color: String(textColor),
+    bg_color: String(bgColor),
+    cuts: (segments || []).map((seg, i) => {
+      const title = String(seg.title || '').trim()
+      // giữ nguyên nếu AI đã tự đánh số, còn không thì thêm "PARTE N:"
+      const hasLabel = partLabel && new RegExp(`^${partLabel}\\s*\\d+\\s*:`, 'i').test(title)
+      return {
+        start: toClock(seg.start),
+        end: toClock(seg.end),
+        title_bottom: partLabel && !hasLabel ? `${partLabel} ${i + 1}: ${title}` : title,
+      }
+    }),
+  }
+}
+
 export const DEFAULT_LANGUAGE = 'Tây Ban Nha'
 
 // Khối chỉ định ngôn ngữ — nối vào cuối prompt để Name và title_bottom_N

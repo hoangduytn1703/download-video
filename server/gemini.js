@@ -17,6 +17,25 @@ let configError = ''
 export const getConfigError = () => configError
 export const configFilePath = () => CONFIG_FILE
 
+// Danh sách API key dùng xoay vòng. Config lưu geminiKeys (mảng); vẫn đọc được
+// geminiKey cũ để không phá cấu hình của người đang dùng.
+export function getKeys(cfg) {
+  const list = Array.isArray(cfg?.geminiKeys) ? cfg.geminiKeys : []
+  const all = [...list, cfg?.geminiKey]
+    .map(k => String(k || '').trim())
+    .filter(Boolean)
+  return [...new Set(all)]
+}
+
+// Lỗi báo key này hết lượt/bị chặn -> nên đổi sang key khác.
+// Lỗi khác (prompt sai, video hỏng) thì đổi key cũng vô ích.
+export function isQuotaError(err) {
+  if (err?.keyExhausted) return true
+  if ([400, 403, 429].includes(err?.status)) return true
+  const msg = String(err?.message || err || '')
+  return /quota|rate.?limit|RESOURCE_EXHAUSTED|too many requests|\b429\b|API key not valid|invalid.*api key|API key không hợp lệ|hết quota/i.test(msg)
+}
+
 export function loadConfig() {
   let raw
   try {
@@ -199,9 +218,14 @@ async function analyzeVideoOnce(url, { apiKey, prompt, model, transcript, langua
       const body = await res.json()
       if (body?.error?.message) detail = body.error.message
     } catch {}
-    if (res.status === 400 && /API key/i.test(detail)) detail = 'API key không hợp lệ — kiểm tra lại trong Cài đặt (⚙️)'
+    const badKey = res.status === 400 && /API key/i.test(detail)
+    if (badKey) detail = 'API key không hợp lệ — kiểm tra lại trong Cài đặt (⚙️)'
     if (res.status === 429) detail = 'Hết quota Gemini tạm thời — chờ một lát rồi thử lại. ' + detail
-    throw new Error('Gemini từ chối: ' + detail)
+    const err = new Error('Gemini từ chối: ' + detail)
+    err.status = res.status
+    // key này dùng không được (sai key / hết lượt / bị chặn) -> nên đổi sang key khác
+    err.keyExhausted = badKey || res.status === 429 || res.status === 403
+    throw err
   }
 
   const data = await res.json()
