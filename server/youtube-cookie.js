@@ -420,28 +420,77 @@ function videoIdOf(url) {
   return String(url || '')
 }
 
+// ===== Cache cấu hình client (ytcfg) + lấy dữ liệu video bằng next endpoint =====
+// Panel Hỏi Gemini chỉ xuất hiện khi gọi với cfg ĐẦY ĐỦ (visitorData + experiment flags);
+// cfg này giống nhau cho mọi video nên chỉ lấy MỘT lần từ HTML rồi cache, các video sau
+// gọi next (JSON, nhẹ hơn ~35% so với tải cả trang watch).
+let cfgCache = null
+let cfgAt = 0
+const CFG_TTL = 30 * 60 * 1000
+// Trang watch có NHIỀU lệnh ytcfg.set(...) — cái đầu thường thiếu key/context.
+// Gộp tất cả lại để có INNERTUBE_CONTEXT (visitorData + experiment flags) đầy đủ,
+// nếu không thì panel Hỏi Gemini sẽ không xuất hiện.
+function extractMergedYtcfg(html) {
+  let merged = {}
+  let idx = 0
+  while ((idx = html.indexOf('ytcfg.set(', idx)) >= 0) {
+    const o = extractJsonAfter(html.slice(idx), 'ytcfg.set(')
+    if (o && typeof o === 'object' && !Array.isArray(o)) merged = { ...merged, ...o }
+    idx += 10
+  }
+  return merged
+}
+
+async function getConfig(cookie, force = false) {
+  if (!force && cfgCache && Date.now() - cfgAt < CFG_TTL) return cfgCache
+  // seed cfg từ một trang watch ổn định (chỉ lấy client config, không quan tâm video này)
+  const url = `${ORIGIN}/watch?v=dQw4w9WgXcQ&hl=vi`
+  const html = await fetch(url, { headers: { Cookie: cookie, 'User-Agent': UA, 'Accept-Language': 'vi,en;q=0.8' } }).then(r => r.text())
+  const cfg = pickCfg(extractMergedYtcfg(html))
+  // cookie auth đủ để gọi InnerTube nên không bắt buộc apiKey; cần CONTEXT để panel hiện
+  if (!cfg.context?.client) throw new Error('Không lấy được cấu hình YouTube (ytcfg) — cookie có thể đã hết hạn')
+  cfgCache = cfg
+  cfgAt = Date.now()
+  return cfgCache
+}
+export function clearConfigCache() { cfgCache = null; cfgAt = 0 }
+
+// Lấy dữ liệu trang video (có token youchat) bằng next endpoint + cfg đã cache.
+// Không có token thì thử làm mới cfg một lần (phòng cfg cũ), vẫn không có -> trả null.
+async function fetchVideoData(cookie, videoId) {
+  let cfg = await getConfig(cookie)
+  let nx = await innertube(cookie, cfg, 'next', { videoId })
+  let token = findYouchatToken(nx)
+  if (!token) {
+    cfg = await getConfig(cookie, true)
+    nx = await innertube(cookie, cfg, 'next', { videoId })
+    token = findYouchatToken(nx)
+  }
+  return { cfg, nx, token }
+}
+
 // Dò xem tài khoản này có thấy panel Hỏi Gemini không — trả tóm tắt cho UI, lưu chi tiết ra ask-debug
 export async function probeAsk(url) {
   const cookie = loadCookie()
   if (!cookie) throw new Error(NO_COOKIE_MESSAGE)
   const videoId = videoIdOf(url)
-  const page = await fetchWatchPage(cookie, videoId)
-  const candidates = findAskCandidates(page.initialData)
-  const pageToken = findYouchatToken(page.initialData)
+  const { cfg, nx, token } = await fetchVideoData(cookie, videoId)
+  const candidates = findAskCandidates(nx)
   const panelIds = []
-  for (const p of page.initialData.engagementPanels || []) {
+  for (const p of nx.engagementPanels || []) {
     const r = p.engagementPanelSectionListRenderer
     if (r) panelIds.push(r.panelIdentifier || r.targetId || '(không tên)')
   }
   const summary = {
     videoId,
-    loggedIn: page.cfg.loggedIn,
-    clientVersion: page.cfg.clientVersion,
-    youchatToken: pageToken ? 'có sẵn trên trang (video ' + decodeYouchatContinuation(pageToken)?.videoId + ')' : 'không có trên trang — app sẽ tự dựng token',
+    loggedIn: cfg.loggedIn,
+    clientVersion: cfg.clientVersion,
+    via: 'next',
+    youchatToken: token ? 'CÓ (panel Hỏi Gemini sẵn sàng cho video ' + decodeYouchatContinuation(token)?.videoId + ')' : 'KHÔNG — YouTube chưa mở panel (bị siết tạm thời hoặc tính năng chưa bật)',
     engagementPanels: panelIds,
     askCandidates: candidates.map(c => ({ path: c.path, key: c.key, value: c.value, endpointTypes: c.endpoints.map(e => e.type) })),
   }
-  dump(`watch-${videoId}.json`, { summary, cfg: { ...page.cfg, context: undefined }, candidates, engagementPanels: page.initialData.engagementPanels })
+  dump(`watch-${videoId}.json`, { summary, candidates, engagementPanels: nx.engagementPanels })
   return { ...summary, debugDir: DEBUG_DIR }
 }
 
@@ -476,10 +525,18 @@ function cfgWithJars(cfg, jars) {
   return { ...cfg, context: { ...ctx, request: { ...(ctx.request || {}), useSsl: true, consistencyTokenJars: jars } } }
 }
 
-// Một tài khoản chỉ hỏi một câu tại một thời điểm — tránh bị YouTube coi là spam
+// Một tài khoản chỉ hỏi một câu tại một thời điểm — tránh bị YouTube coi là spam.
+// Thêm giãn cách tối thiểu giữa hai câu hỏi để không chạm ngưỡng siết của YouTube.
+const ASK_GAP_MS = 4000
+let lastAskAt = 0
+async function paceGate() {
+  const wait = lastAskAt + ASK_GAP_MS - Date.now()
+  if (wait > 0) await new Promise(r => setTimeout(r, wait))
+  lastAskAt = Date.now()
+}
 let askQueue = Promise.resolve()
 const enqueueAsk = fn => {
-  const run = askQueue.then(fn, fn)
+  const run = askQueue.then(() => paceGate()).then(fn, fn)
   askQueue = run.catch(() => {})
   return run
 }
@@ -499,8 +556,7 @@ export async function analyzeViaCookieAsk(url, { prompt, language } = {}) {
   if (!cookie) throw new Error(NO_COOKIE_MESSAGE)
   return enqueueAsk(async () => {
     const videoId = videoIdOf(url)
-    const page = await fetchWatchPage(cookie, videoId)
-    const pageToken = findYouchatToken(page.initialData)
+    const { cfg, nx, token: pageToken } = await fetchVideoData(cookie, videoId)
     const steps = []
     const record = (step, request, response) => {
       if (steps.length < 12) steps.push({ step, at: new Date().toISOString(), request, response })
@@ -510,7 +566,7 @@ export async function analyzeViaCookieAsk(url, { prompt, language } = {}) {
     // Token tự dựng đã chứng minh bị YouTube từ chối ("Đã xảy ra lỗi") nên không dùng để hỏi;
     // không có token thật = panel Ask chưa được YouTube trả về -> báo ngay, khỏi poll vô ích.
     if (!pageToken) {
-      dump(`ask-${videoId}.json`, { videoId, tokenSource: 'none', reason: 'panel Hỏi Gemini không có trong trang (server-side)', engagementPanels: (page.initialData.engagementPanels || []).map(p => p.engagementPanelSectionListRenderer?.panelIdentifier) })
+      dump(`ask-${videoId}.json`, { videoId, tokenSource: 'none', reason: 'panel Hỏi Gemini không có (server-side, next endpoint)', engagementPanels: (nx.engagementPanels || []).map(p => p.engagementPanelSectionListRenderer?.panelIdentifier) })
       throw new Error(ASK_PANEL_GONE)
     }
     let continuation = pageToken
@@ -518,7 +574,7 @@ export async function analyzeViaCookieAsk(url, { prompt, language } = {}) {
     const sendQuestion = async question => {
       const clientMessageId = `youchat-${Date.now()}`
       const body = { continuation, formData: { inputComposerFormData: { clientMessageId, playerOffsetMs: '0', userInputText: question } } }
-      const res = await innertube(cookie, page.cfg, 'get_panel', body)
+      const res = await innertube(cookie, cfg, 'get_panel', body)
       record('send', { ...body, formData: { inputComposerFormData: { ...body.formData.inputComposerFormData, userInputText: `(${question.length} chữ)` } } }, res)
       return res
     }
@@ -529,7 +585,7 @@ export async function analyzeViaCookieAsk(url, { prompt, language } = {}) {
     let text = collectText(res).join('\n')
     // YouTube báo lỗi ngay -> dừng luôn (đừng poll), báo rõ nguyên nhân
     if (hasErrorReply(text)) {
-      dump(`ask-${videoId}.json`, { videoId, tokenSource: 'page', promptUsed, polls: 0, answered: false, errorReply: true, textSeen: text.slice(0, 2000), steps })
+      dump(`ask-${videoId}.json`, { videoId, tokenSource: 'next', promptUsed, polls: 0, answered: false, errorReply: true, textSeen: text.slice(0, 2000), steps })
       throw new Error(ASK_ERROR_REPLY)
     }
     const mutations = res?.frameworkUpdates?.entityBatchUpdate?.mutations || []
@@ -539,7 +595,7 @@ export async function analyzeViaCookieAsk(url, { prompt, language } = {}) {
       res = await sendQuestion(compactAskPrompt(language))
       text = collectText(res).join('\n')
       if (hasErrorReply(text)) {
-        dump(`ask-${videoId}.json`, { videoId, tokenSource: 'page', promptUsed, polls: 0, answered: false, errorReply: true, textSeen: text.slice(0, 2000), steps })
+        dump(`ask-${videoId}.json`, { videoId, tokenSource: 'next', promptUsed, polls: 0, answered: false, errorReply: true, textSeen: text.slice(0, 2000), steps })
         throw new Error(ASK_ERROR_REPLY)
       }
     }
@@ -553,7 +609,7 @@ export async function analyzeViaCookieAsk(url, { prompt, language } = {}) {
       const nextTok = findYouchatToken(res)
       if (nextTok) continuation = nextTok
       const body = { continuation }
-      res = await innertube(cookie, cfgWithJars(page.cfg, jars), 'get_panel', body)
+      res = await innertube(cookie, cfgWithJars(cfg, jars), 'get_panel', body)
       polls++
       if (polls <= 3 || polls % 5 === 0) record(`poll-${polls}`, body, res)
       const j = consistencyJars(res)
@@ -562,13 +618,13 @@ export async function analyzeViaCookieAsk(url, { prompt, language } = {}) {
       if (hasErrorReply(text)) break // YouTube báo lỗi giữa chừng -> thôi
     }
     if (hasErrorReply(text) && !hasAnswer(text)) {
-      dump(`ask-${videoId}.json`, { videoId, tokenSource: 'page', promptUsed, polls, answered: false, errorReply: true, textSeen: text.slice(0, 2000), steps })
+      dump(`ask-${videoId}.json`, { videoId, tokenSource: 'next', promptUsed, polls, answered: false, errorReply: true, textSeen: text.slice(0, 2000), steps })
       throw new Error(ASK_ERROR_REPLY)
     }
 
     dump(`ask-${videoId}.json`, {
       videoId,
-      tokenSource: 'page',
+      tokenSource: 'next',
       promptUsed,
       polls,
       answered: hasAnswer(text),
