@@ -19,7 +19,7 @@ const MAX_ANALYZE_ROWS = 40
 const SHOW_YOUTUBE_ASK = false
 
 let rowKey = 1
-const newRow = (folder = '') => ({ key: rowKey++, url: '', filename: '', folder, aiText: '' })
+const newRow = (folder = '') => ({ key: rowKey++, url: '', filename: '', folder, aiText: '', segCount: null })
 
 // giây -> "m:ss" / "h:mm:ss" để hiển thị trong ô sửa
 const secToText = sec => {
@@ -56,6 +56,9 @@ export default function App() {
   // Đếm ngược nghỉ 5 giây sau mỗi lượt phân tích — chống bấm dồn dập tốn token
   const [cooldown, setCooldown] = useState(0)
   const [copiedKey, setCopiedKey] = useState(null) // key dòng vừa copy kết quả, hoặc 'ALL' / 'link:<key>'
+  // Text nháp cho ô sửa trực tiếp; và các dòng đang mở bảng sửa
+  const [drafts, setDrafts] = useState({})
+  const [tableOpen, setTableOpen] = useState(() => new Set())
   // Các dòng đang chạy "phân tích lại" riêng lẻ
   const [rerunKeys, setRerunKeys] = useState(() => new Set())
   const pollRef = useRef(null)
@@ -143,6 +146,11 @@ export default function App() {
       delete next[key]
       return next
     })
+
+  const clearDraft = key => setDrafts(d => { const n = { ...d }; delete n[key]; return n })
+  const toggleTable = key => setTableOpen(s2 => { const n = new Set(s2); n.has(key) ? n.delete(key) : n.add(key); return n })
+  // Sửa số đoạn mong muốn của một dòng (null = AI tự đề xuất)
+  const setSegCount = (key, val) => updateRow(key, { segCount: val })
 
   const removeRow = key => {
     setRows(rs => rs.filter(r => r.key !== key))
@@ -287,7 +295,7 @@ export default function App() {
           const res = await fetch(`${API}/api/analyze`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: r.url, source: 'app', prompt: promptOverride || undefined }),
+            body: JSON.stringify({ url: r.url, source: 'app', prompt: promptOverride || undefined, segCount: r.segCount || undefined }),
           })
           const d = await res.json().catch(() => ({}))
           if (!res.ok || !d.ok) throw new Error(d.message || `Phân tích thất bại (HTTP ${res.status})`)
@@ -297,6 +305,7 @@ export default function App() {
             segments: d.segments.map(s => ({ start: secToText(s.start), end: secToText(s.end), title: s.title })),
           }
           patchAnalysis(r.key, ready)
+          clearDraft(r.key)
           if (onReady) await onReady(r, ready)
         } catch (e) {
           patchAnalysis(r.key, { status: 'error', error: e?.message || 'Phân tích thất bại' })
@@ -602,6 +611,9 @@ export default function App() {
             {urlDup && (
               <div className="row-error">⚠ Link này trùng với một dòng phía trên — sẽ được bỏ qua để không phân tích 2 lần</div>
             )}
+            {mode === 'analyze' && !urlInvalid && !urlDup && r.url.trim() && (
+              <SegCountControl value={r.segCount} onChange={v => setSegCount(r.key, v)} disabled={hasRunning || analyzingCount > 0} />
+            )}
             </div>
           )})}
         </div>
@@ -715,7 +727,8 @@ export default function App() {
           )}
           {rows.filter(r => analysis[r.key]).map(r => {
             const a = analysis[r.key]
-            const pipe = a.status === 'ready' ? segmentsToPipeText(a.name, a.segments) : ''
+            const canonical = a.status === 'ready' ? segmentsToPipeText(a.name, a.segments) : ''
+            const pipe = a.status === 'ready' ? (drafts[r.key] ?? canonical) : ''
             return (
               <div className={`ana ana-${a.status}`} key={r.key}>
                 <div className="ana-head">
@@ -754,19 +767,37 @@ export default function App() {
                 </div>
                 {a.status === 'analyzing' && <div className="bar"><div className="bar-fill ana-pulse" style={{ width: '100%' }} /></div>}
                 {a.status === 'ready' && (
-                  <SegmentEditor
-                    entry={a}
-                    onName={name => patchAnalysis(r.key, { name })}
-                    onSegment={(i, patch) => updateSegment(r.key, i, patch)}
-                    onRemove={i => removeSegment(r.key, i)}
-                    onAdd={() => addSegment(r.key)}
-                  />
-                )}
-                {a.status === 'ready' && (
-                  <details className="pipe-details">
-                    <summary>Xem text kết quả (đúng bản sẽ được copy)</summary>
-                    <pre className="pipe-text">{pipe}</pre>
-                  </details>
+                  <>
+                    <textarea
+                      className="pipe-edit"
+                      value={pipe}
+                      spellCheck={false}
+                      onChange={e => {
+                        const text = e.target.value
+                        setDrafts(d => ({ ...d, [r.key]: text }))
+                        const parsed = parseSegmentsText(text)
+                        if (parsed.segments.length) patchAnalysis(r.key, { name: parsed.name || a.name, segments: parsed.segments })
+                      }}
+                    />
+                    <div className="result-tools-row">
+                      <button className="btn-icon" onClick={() => toggleTable(r.key)}>
+                        {tableOpen.has(r.key) ? '⊞ Đóng bảng sửa' : '⊞ Mở bảng sửa'}
+                      </button>
+                      {drafts[r.key] != null && drafts[r.key] !== canonical && (
+                        <button className="btn-icon" title="Về đúng định dạng chuẩn" onClick={() => clearDraft(r.key)}>↺ Chuẩn hóa</button>
+                      )}
+                      <SegCountControl value={r.segCount} onChange={v => setSegCount(r.key, v)} disabled={rerunKeys.has(r.key)} />
+                    </div>
+                    {tableOpen.has(r.key) && (
+                      <SegmentEditor
+                        entry={a}
+                        onName={name => { patchAnalysis(r.key, { name }); clearDraft(r.key) }}
+                        onSegment={(i, patch) => { updateSegment(r.key, i, patch); clearDraft(r.key) }}
+                        onRemove={i => { removeSegment(r.key, i); clearDraft(r.key) }}
+                        onAdd={() => { addSegment(r.key); clearDraft(r.key) }}
+                      />
+                    )}
+                  </>
                 )}
               </div>
             )
@@ -909,6 +940,38 @@ function SegmentEditor({ entry, readOnly = false, onName, onSegment, onRemove, o
       </table>
       {!readOnly && <button className="seg-add" onClick={onAdd}>＋ Thêm đoạn</button>}
     </>
+  )
+}
+
+// Chọn số đoạn mong muốn cho một link: AI tự đề xuất, hoặc số cụ thể (2–20).
+function SegCountControl({ value, onChange, disabled }) {
+  const custom = value != null
+  return (
+    <div className="segcount">
+      <label className="segcount-opt">
+        <input type="radio" checked={!custom} onChange={() => onChange(null)} disabled={disabled} />
+        <span>AI tự đề xuất</span>
+      </label>
+      <label className="segcount-opt">
+        <input type="radio" checked={custom} onChange={() => onChange(3)} disabled={disabled} />
+        <span>Số đoạn cụ thể</span>
+      </label>
+      {custom && (
+        <input
+          className="segcount-num"
+          type="number"
+          min={2}
+          max={20}
+          value={value}
+          disabled={disabled}
+          onChange={e => {
+            const n = parseInt(e.target.value, 10)
+            onChange(Number.isFinite(n) ? Math.min(20, Math.max(2, n)) : 2)
+          }}
+        />
+      )}
+      {custom && <span className="segcount-hint">(2–20 đoạn)</span>}
+    </div>
   )
 }
 

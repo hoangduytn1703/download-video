@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url'
 import { collectSpawnOutput, sendJsonOnce } from './http-utils.js'
 import { loadConfig, saveConfig, getConfigError, configFilePath, getKeys, isQuotaError, analyzeVideo, listModels, normalizeSegments, formatTimestamp, DEFAULT_PROMPT, DEFAULT_MODEL } from './gemini.js'
 import { fetchTranscript } from './transcript.js'
+import { segCountBlock } from '../src/parse.js'
 import { loadCookie, saveCookie, clearCookie, parseCookieInput, checkLogin, probeAsk, analyzeViaCookieAsk, NO_COOKIE_MESSAGE, debugDirPath } from './youtube-cookie.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -533,10 +534,13 @@ app.post('/api/analyze', async (req, res) => {
   try {
     const source = req.body?.source
     const promptOverrideEarly = typeof req.body?.prompt === 'string' && req.body.prompt.trim() ? req.body.prompt.trim() : null
+    // Số đoạn mong muốn cho riêng link này (2–20). Ngoài khoảng thì coi như AI tự đề xuất.
+    const segCount = Number.isFinite(req.body?.segCount) && req.body.segCount >= 2 && req.body.segCount <= 20 ? Math.round(req.body.segCount) : null
+    const seg = segCount ? segCountBlock(segCount) : ''
     if (source === 'youtube' || (source === 'app' && cfg.analysisSource === 'youtube')) {
       // Hỏi Gemini ngay trên YouTube bằng cookie cá nhân — không dùng Gemini API, không tốn token.
       // Lỗi thì báo thẳng, không âm thầm đổi sang Gemini API.
-      const result = await analyzeViaCookieAsk(url, { prompt: promptOverrideEarly || cfg.prompt, language: cfg.language })
+      const result = await analyzeViaCookieAsk(url, { prompt: (promptOverrideEarly || cfg.prompt) + seg, language: cfg.language })
       return res.json({ ok: true, ...result, via: 'youtube-ask' })
     }
     let transcript = null
@@ -547,7 +551,7 @@ app.post('/api/analyze', async (req, res) => {
     }
     // Tab Cắt có thể gửi prompt riêng cho lần cắt đó (không đụng prompt lưu trong Cài đặt)
     const promptOverride = typeof req.body?.prompt === 'string' && req.body.prompt.trim() ? req.body.prompt.trim() : null
-    const prompt = promptOverride || cfg.prompt
+    const prompt = (promptOverride || cfg.prompt) + seg
     // Chế độ Nhanh (mặc định): có phụ đề thì phân tích bằng model lite (~1-3s thay vì ~25s).
     // Lite lỗi hoặc trả kết quả rỗng thì tự chạy lại bằng model chính — không hỏng luồng.
     const useFast = transcript && cfg.speedMode !== 'quality'

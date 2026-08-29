@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText, segmentsToJson } from './parse.js'
+import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText, segmentsToJson, segCountBlock } from './parse.js'
 
 test('đọc đúng chuỗi pipe thật của team (từ Gemini)', () => {
   const text =
@@ -209,4 +209,14 @@ test('segmentsToJson không nhân đôi nhãn PARTE khi AI đã tự đánh số
 test('segmentsToJson xử lý video dài hơn 1 tiếng', () => {
   const out = segmentsToJson('u', 'n', [{ start: 3725, end: 3800, title: 'Sau 1 tiếng' }])
   assert.equal(out.cuts[0].start, '1:02:05')
+})
+
+test('segCountBlock: chỉ áp khi 2–20, ngoài khoảng thì rỗng', () => {
+  assert.match(segCountBlock(5), /CHÍNH XÁC 5 đoạn/)
+  assert.match(segCountBlock(2), /CHÍNH XÁC 2 đoạn/)
+  assert.match(segCountBlock(20), /CHÍNH XÁC 20 đoạn/)
+  assert.equal(segCountBlock(1), '')
+  assert.equal(segCountBlock(21), '')
+  assert.equal(segCountBlock(null), '')
+  assert.equal(segCountBlock('abc'), '')
 })

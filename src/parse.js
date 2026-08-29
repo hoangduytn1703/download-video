@@ -175,6 +175,14 @@ export function segmentsToJson(url, name, segments, options = {}) {
   }
 }
 
+// Ràng buộc số đoạn khi người dùng chọn "số đoạn cụ thể" cho một link.
+export function segCountBlock(n) {
+  const count = Math.round(Number(n))
+  if (!Number.isFinite(count) || count < 2 || count > 20) return ''
+  return `\n\nYÊU CẦU SỐ LƯỢNG (BẮT BUỘC): Trả về CHÍNH XÁC ${count} đoạn — không nhiều hơn, không ít hơn. ` +
+    `Nếu video có nhiều hơn ${count} đoạn đạt tiêu chí, chỉ chọn ${count} đoạn hay nhất.`
+}
+
 export const DEFAULT_LANGUAGE = 'Tây Ban Nha'
 
 // Khối chỉ định ngôn ngữ — nối vào cuối prompt để Name và title_bottom_N
