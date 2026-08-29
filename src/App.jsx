@@ -75,6 +75,8 @@ export default function App() {
   const [searchKeyword, setSearchKeyword] = useState('')
   const [searchResults, setSearchResults] = useState({})
   const [searching, setSearching] = useState(false)
+  const [savedLinks, setSavedLinks] = useState([])
+  const [showSaved, setShowSaved] = useState(false)
   const pollRef = useRef(null)
 
   const refresh = async () => {
@@ -96,6 +98,8 @@ export default function App() {
       .then(r => r.json())
       .then(setSettings)
       .catch(() => {})
+    // Nạp link đã lưu (để dùng lại sau)
+    fetch(`${API}/api/saved-links`).then(r => r.json()).then(d => setSavedLinks(d.links || [])).catch(() => {})
     // Đồng bộ danh sách job ngay khi mở app — tránh hiện job "ma" từ phiên trước
     refresh().catch(() => {})
     return () => clearInterval(pollRef.current)
@@ -423,6 +427,29 @@ export default function App() {
     })
     setMode('analyze')
     if (over) setTimeout(() => alert('Tab Phân tích tối đa ' + rowLimit + ' link — đã đưa ' + rowLimit + ' link đầu, phần còn lại lưu/để dành nhé.'), 50)
+  }
+
+  // Lưu link để dùng lại sau (lưu vào config trên máy)
+  const saveLinks = async videos => {
+    const add = videos.map(v => ({ url: v.url, title: v.title }))
+    if (!add.length) return
+    const res = await fetch(`${API}/api/saved-links`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ add }),
+    }).then(r => r.json())
+    if (res.ok) { setSavedLinks(res.links); setShowSaved(true); alert('Đã lưu — tổng cộng ' + res.links.length + ' link đã lưu.') }
+  }
+  const removeSaved = async url => {
+    const res = await fetch(`${API}/api/saved-links`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ remove: url }),
+    }).then(r => r.json())
+    if (res.ok) setSavedLinks(res.links)
+  }
+  const clearSaved = async () => {
+    if (!confirm('Xóa hết link đã lưu?')) return
+    const res = await fetch(`${API}/api/saved-links`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }),
+    }).then(r => r.json())
+    if (res.ok) setSavedLinks(res.links)
   }
 
   const analyzeAll = async () => {
@@ -856,6 +883,30 @@ export default function App() {
 
       {mode === 'search' && (
         <>
+        {savedLinks.length > 0 && (
+          <div className="saved-panel">
+            <div className="saved-head">
+              <button onClick={() => setShowSaved(v => !v)}>📌 Link đã lưu ({savedLinks.length}) {showSaved ? '▲' : '▼'}</button>
+              {showSaved && (
+                <>
+                  <button onClick={() => copyUrls('saved', savedLinks.map(l => l.url))}>{copiedKey === 'saved' ? '✓ Đã copy!' : '📋 Copy tất cả'}</button>
+                  <button className="primary" onClick={() => sendToAnalyze(savedLinks.map(l => l.url))}>➡ Đưa sang Phân tích</button>
+                  <button className="btn-clear-all" onClick={clearSaved}>🗑 Xóa hết</button>
+                </>
+              )}
+            </div>
+            {showSaved && (
+              <div className="sr-list">
+                {savedLinks.map(l => (
+                  <div className="sr-item" key={l.url}>
+                    <a href={l.url} target="_blank" rel="noreferrer">{l.title || l.url}</a>
+                    <button className="btn-icon" title="Bỏ khỏi danh sách đã lưu" onClick={() => removeSaved(l.url)} style={{ marginLeft: 'auto' }}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <div className={'card' + (searching ? ' locked' : '')}>
           {searching && <div className="locked-note">🔎 Đang tìm — chờ AI quét kênh xong nhé</div>}
           <div className="rows">
@@ -879,17 +930,22 @@ export default function App() {
           <div className="actions">
             <button onClick={addChannel} disabled={searching}>＋ Thêm channel</button>
             <button onClick={pasteChannels} disabled={searching}>📋 Dán nhiều channel</button>
-            <button className="primary" onClick={runSearch} disabled={searching || validChannels.length === 0}>
-              {searching ? '🔎 Đang tìm...' : '🔎 Tìm kiếm (' + validChannels.length + ')'}
-            </button>
           </div>
           <div className="search-opts">
             <span className="json-lbl">Tiêu chí:</span>
             <label className="set-check"><input type="radio" name="ssort" checked={searchSort === 'views'} onChange={() => setSearchSort('views')} disabled={searching} /><span>Theo lượt xem</span></label>
             <label className="set-check"><input type="radio" name="ssort" checked={searchSort === 'date'} onChange={() => setSearchSort('date')} disabled={searching} /><span>Theo ngày đăng</span></label>
-            <input className="set-input search-kw" placeholder="Từ khóa (tùy chọn) — tìm phim theo từ khóa" value={searchKeyword} onChange={e => setSearchKeyword(e.target.value)} disabled={searching} />
+            <label className="set-check"><input type="radio" name="ssort" checked={searchSort === 'episode'} onChange={() => setSearchSort('episode')} disabled={searching} /><span>Theo tập phim</span></label>
           </div>
-          <p className="set-note">AI tự quét kênh, chọn ra các video là phim/truyện phù hợp để cắt clip. Kênh không có phim (thể thao, tin tức...) sẽ báo không phù hợp.</p>
+          <div className="search-title-row">
+            <label className="json-lbl" htmlFor="search-title">Title video cần tìm:</label>
+            <input id="search-title" className="set-input search-kw" placeholder="Tên phim cần tìm (tùy chọn) — vd Đấu La Đại Lục" value={searchKeyword} onChange={e => setSearchKeyword(e.target.value)} disabled={searching} />
+          </div>
+          <div className="actions">
+            <button className="primary" onClick={runSearch} disabled={searching || validChannels.length === 0} style={{ marginLeft: 'auto' }}>
+              {searching ? '🔎 Đang tìm...' : '🔎 Tìm kiếm (' + validChannels.length + ')'}
+            </button>
+          </div>
         </div>
 
         <div className="search-res">
@@ -910,6 +966,7 @@ export default function App() {
                     <div className="sr-tools">
                       <button onClick={() => toggleSearchAll(c.key, urls)}>{urls.every(u => r.selected.has(u)) ? 'Bỏ chọn hết' : 'Chọn hết'}</button>
                       <button onClick={() => copyUrls('sc-' + c.key, r.selected.size ? [...r.selected] : urls)}>{copiedKey === ('sc-' + c.key) ? '✓ Đã copy!' : ('📋 Copy ' + (r.selected.size ? 'đã chọn (' + r.selected.size + ')' : 'tất cả'))}</button>
+                      <button onClick={() => saveLinks(r.videos.filter(v => !r.selected.size || r.selected.has(v.url)))}>💾 Lưu link ({r.selected.size || urls.length})</button>
                       <button className="primary" onClick={() => sendToAnalyze(r.selected.size ? [...r.selected] : urls)}>➡ Đưa sang Phân tích ({r.selected.size || urls.length})</button>
                     </div>
                     <div className="sr-list">

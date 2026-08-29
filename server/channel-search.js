@@ -37,6 +37,13 @@ export function parseViews(text) {
   return Math.round(n * mult)
 }
 
+// ===== Parse số tập từ tiêu đề (tập 5, episode 12, ep 3, tập 1-25 -> lấy số đầu) =====
+export function parseEpisodeNumber(title) {
+  const t = String(title || '').toLowerCase()
+  const m = t.match(/(?:tập|tap|episode|ep|phần|phan|chương|chuong)\s*\.?\s*(\d{1,4})/)
+  return m ? parseInt(m[1], 10) : Infinity
+}
+
 // ===== Parse "đăng cách đây bao lâu" -> số ngày (để xếp mới nhất) =====
 export function parsePublishedDays(text) {
   const t = String(text || '').toLowerCase()
@@ -136,16 +143,19 @@ export async function fetchChannelVideos(url, { maxPages = 3 } = {}) {
 }
 
 // ===== Prompt do APP tự định nghĩa (không cho user sửa) =====
-function buildSearchPrompt({ keyword, language }) {
+function buildSearchPrompt({ keyword, sortBy, language }) {
   const kw = String(keyword || '').trim()
+  const episode = sortBy === 'episode'
   return [
     'Bạn là trợ lý chọn video PHIM để cắt clip recap đăng TikTok.',
     'Dưới đây là danh sách video công khai của một kênh YouTube (đã kèm lượt xem và thời gian đăng).',
-    'NHIỆM VỤ: chọn ra TẤT CẢ video là PHIM / tập phim / truyện phim / phim chiếu mạng / review phim có nội dung kể chuyện — phù hợp để cắt clip recap. Đừng giới hạn số lượng, có bao nhiêu video phù hợp thì lấy hết.',
-    kw ? ('CHỈ chọn video LIÊN QUAN tới từ khóa: "' + kw + '".') : '',
+    episode
+      ? 'NHIỆM VỤ: chọn ra TẤT CẢ các TẬP PHIM (tiêu đề có "tập N" / "episode N" / "ep N" / "phần N"...) — sắp xếp theo thứ tự tập TĂNG DẦN từ tập đầu tới tập cuối. Lấy hết, đừng bỏ tập nào.'
+      : 'NHIỆM VỤ: chọn ra TẤT CẢ video là PHIM / tập phim / truyện phim / phim chiếu mạng / review phim có nội dung kể chuyện. Đừng giới hạn số lượng, có bao nhiêu video phù hợp thì lấy hết.',
+    kw ? ('CHỈ chọn video có TÊN PHIM liên quan tới: "' + kw + '" (bỏ qua phim khác).') : '',
     'LOẠI BỎ: video không phải phim (nhạc, vlog, tin tức, thể thao, gameshow, trailer ngắn, tổng hợp, livestream).',
-    'Nếu kênh này KHÔNG có nội dung phim/truyện phù hợp thì trả về suitable=false, videos rỗng, và reason giải thích ngắn gọn (ví dụ: "Kênh về bóng đá, không có phim").',
-    'Giữ nguyên thứ tự ưu tiên như trong danh sách đưa vào (danh sách đã được sắp theo tiêu chí người dùng chọn).',
+    'Nếu kênh này KHÔNG có nội dung phù hợp thì trả về suitable=false, videos rỗng, và reason ngắn gọn.',
+    'Giữ nguyên thứ tự như trong danh sách đưa vào (đã được sắp theo tiêu chí người dùng chọn).',
     'Chỉ trả về các url có trong danh sách, không bịa.',
     languageBlock(language),
   ].filter(Boolean).join('\n')
@@ -212,21 +222,27 @@ export async function searchChannel(url, { apiKey, model, sortBy = 'views', keyw
     const hit = videos.filter(v => norm(v.title).includes(kw))
     cand = hit.length ? hit : videos // không khớp thì để AI tự lọc theo nghĩa
   }
-  // Sắp theo tiêu chí
-  cand = [...cand].sort((a, b) => (sortBy === 'date' ? a.daysAgo - b.daysAgo : b.views - a.views))
+  // Sắp theo tiêu chí: lượt xem / mới nhất / số tập tăng dần
+  const sortFn =
+    sortBy === 'date' ? (a, b) => a.daysAgo - b.daysAgo :
+    sortBy === 'episode' ? (a, b) => parseEpisodeNumber(a.title) - parseEpisodeNumber(b.title) || b.views - a.views :
+    (a, b) => b.views - a.views
+  cand = [...cand].sort(sortFn)
   // Đưa cho AI tối đa 100 ứng viên đầu để chọn (không giới hạn số lượng chọn ra)
   const candidates = cand.slice(0, 100)
 
-  const prompt = buildSearchPrompt({ keyword, language })
+  const prompt = buildSearchPrompt({ keyword, sortBy, language })
   const picked = await pickWithGemini({ apiKey, model, prompt, candidates })
   // chỉ giữ url thật sự có trong danh sách (không bịa), giữ đúng thứ tự AI trả
   const byUrl = new Map(videos.map(v => [v.url, v]))
   const idOf = u => { try { return new URL(u).searchParams.get('v') } catch { return null } }
   const seen = new Set()
-  const results = (picked.videos || [])
+  let results = (picked.videos || [])
     .map(x => byUrl.get(x.url) || videos.find(v => v.id === idOf(x.url)))
     .filter(v => v && !seen.has(v.id) && seen.add(v.id))
     .map(v => ({ url: v.url, title: v.title, views: v.views, publishedText: v.publishedText }))
+  // Tiêu chí tập phim: đảm bảo thứ tự tập tăng dần dù AI trả lộn xộn
+  if (sortBy === 'episode') results = results.sort((a, b) => parseEpisodeNumber(a.title) - parseEpisodeNumber(b.title))
 
   return {
     channelName,

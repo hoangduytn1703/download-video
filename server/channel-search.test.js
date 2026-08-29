@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isChannelUrl, parseViews, parsePublishedDays, parseLockups, channelVideosUrl } from './channel-search.js'
+import { isChannelUrl, parseViews, parsePublishedDays, parseLockups, channelVideosUrl, parseEpisodeNumber } from './channel-search.js'
 
 test('isChannelUrl: nhận /channel, /@, /c, /user; loại watch/playlist', () => {
   assert.equal(isChannelUrl('https://www.youtube.com/channel/UC9LW_AwhGe-cMDgEJ84XD6w'), true)
@@ -51,4 +51,12 @@ test('parseLockups đọc video từ lockupViewModel', () => {
   assert.equal(v[0].views, 1200000)
   assert.equal(v[0].daysAgo, 3)
   assert.equal(v[0].url, 'https://www.youtube.com/watch?v=abcdefghijk')
+})
+
+test('parseEpisodeNumber lấy số tập từ tiêu đề', () => {
+  assert.equal(parseEpisodeNumber('Đấu La Đại Lục Tập 5'), 5)
+  assert.equal(parseEpisodeNumber('Phim Hay | Tập 1 - 25'), 1)
+  assert.equal(parseEpisodeNumber('Something Episode 12'), 12)
+  assert.equal(parseEpisodeNumber('Movie ep 3'), 3)
+  assert.equal(parseEpisodeNumber('Phim lẻ không có tập'), Infinity)
 })

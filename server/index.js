@@ -404,7 +404,7 @@ app.post('/api/channel-search', async (req, res) => {
   const cfg = loadConfig()
   const keys = getKeys(cfg)
   if (!keys.length) return res.status(422).json({ ok: false, message: 'Chưa có Gemini API key — vào Cài đặt (⚙️) để nhập' })
-  const sortBy = req.body?.sortBy === 'date' ? 'date' : 'views'
+  const sortBy = ['date', 'episode', 'views'].includes(req.body?.sortBy) ? req.body.sortBy : 'views'
   const keyword = typeof req.body?.keyword === 'string' ? req.body.keyword.trim().slice(0, 100) : ''
   // Việc chọn là xếp hạng text -> dùng flash-lite cho nhẹ + đỡ 503
   const opts = { model: cfg.fastModel || 'gemini-flash-lite-latest', sortBy, keyword, language: cfg.language }
@@ -422,6 +422,32 @@ app.post('/api/channel-search', async (req, res) => {
     }
   }
   res.status(422).json({ ok: false, message: lastErr?.message || 'Tìm kiếm thất bại' })
+})
+
+// Link đã lưu để dùng lại sau (lưu trong config, mỗi máy một danh sách).
+app.get('/api/saved-links', (req, res) => {
+  const cfg = loadConfig()
+  res.json({ ok: true, links: Array.isArray(cfg.savedLinks) ? cfg.savedLinks : [] })
+})
+app.post('/api/saved-links', (req, res) => {
+  const cfg = loadConfig()
+  let links = Array.isArray(cfg.savedLinks) ? cfg.savedLinks : []
+  if (req.body?.clear) {
+    links = []
+  } else if (typeof req.body?.remove === 'string') {
+    links = links.filter(l => l.url !== req.body.remove)
+  } else if (Array.isArray(req.body?.add)) {
+    const have = new Set(links.map(l => l.url))
+    for (const it of req.body.add) {
+      const url = String(it?.url || '').trim()
+      if (url && isYouTubeUrl(url) && !have.has(url)) {
+        have.add(url)
+        links.push({ url, title: String(it?.title || '').slice(0, 300), savedAt: Date.now() })
+      }
+    }
+  }
+  saveConfig({ savedLinks: links })
+  res.json({ ok: true, links })
 })
 
 // Kiểm tra tính hợp lệ của từng Gemini API key (key gửi lên, hoặc key đã lưu nếu không gửi).
