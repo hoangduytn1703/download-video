@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isChannelUrl, parseViews, parsePublishedDays, parseLockups, channelVideosUrl, parseEpisodeNumber } from './channel-search.js'
+import { isChannelUrl, parseViews, parsePublishedDays, parseLockups, channelVideosUrl, parseEpisodeNumber, selectCandidates } from './channel-search.js'
 
 test('isChannelUrl: nhận /channel, /@, /c, /user; loại watch/playlist', () => {
   assert.equal(isChannelUrl('https://www.youtube.com/channel/UC9LW_AwhGe-cMDgEJ84XD6w'), true)
@@ -59,4 +59,41 @@ test('parseEpisodeNumber lấy số tập từ tiêu đề', () => {
   assert.equal(parseEpisodeNumber('Something Episode 12'), 12)
   assert.equal(parseEpisodeNumber('Movie ep 3'), 3)
   assert.equal(parseEpisodeNumber('Phim lẻ không có tập'), Infinity)
+})
+
+test('selectCandidates: khớp từ khóa thì KHÔNG cắt bớt (phim 200+ tập vẫn gửi hết)', () => {
+  const videos = Array.from({ length: 220 }, (_, i) => ({
+    title: 'Đấu La Đại Lục Tập ' + (i + 1), views: 100, daysAgo: i, id: 'v' + i,
+  }))
+  const { candidates, matchedByKeyword } = selectCandidates(videos, { sortBy: 'episode', keyword: 'Đấu La Đại Lục' })
+  assert.equal(matchedByKeyword, true)
+  assert.equal(candidates.length, 220, 'không được cắt bớt khi khớp từ khóa')
+  assert.equal(candidates[0].title, 'Đấu La Đại Lục Tập 1')
+  assert.equal(candidates[219].title, 'Đấu La Đại Lục Tập 220')
+})
+
+test('selectCandidates: khớp từ khóa không phân biệt hoa/thường và dấu', () => {
+  const videos = [
+    { title: 'ĐẤU LA ĐẠI LỤC Tập 1', views: 5, daysAgo: 1, id: 'a' },
+    { title: 'Phim Khác Tập 1', views: 5, daysAgo: 1, id: 'b' },
+  ]
+  const { candidates, matchedByKeyword } = selectCandidates(videos, { sortBy: 'views', keyword: 'dau la dai luc' })
+  assert.equal(matchedByKeyword, true)
+  assert.equal(candidates.length, 1)
+  assert.equal(candidates[0].id, 'a')
+})
+
+test('selectCandidates: từ khóa không khớp video nào thì dùng lại toàn bộ danh sách (để AI tự lọc theo nghĩa), có giới hạn số lượng', () => {
+  const videos = Array.from({ length: 300 }, (_, i) => ({ title: 'Video ' + i, views: 300 - i, daysAgo: i, id: 'v' + i }))
+  const { candidates, matchedByKeyword } = selectCandidates(videos, { sortBy: 'views', keyword: 'Không Tồn Tại Đâu' })
+  assert.equal(matchedByKeyword, false)
+  assert.ok(candidates.length <= 150, 'không khớp thì vẫn phải giới hạn số ứng viên gửi AI')
+})
+
+test('selectCandidates: không có từ khóa thì sắp theo tiêu chí và giới hạn hợp lý', () => {
+  const videos = Array.from({ length: 50 }, (_, i) => ({ title: 'V' + i, views: i, daysAgo: 50 - i, id: 'v' + i }))
+  const byViews = selectCandidates(videos, { sortBy: 'views' })
+  assert.equal(byViews.candidates[0].views, 49)
+  const byDate = selectCandidates(videos, { sortBy: 'date' })
+  assert.equal(byDate.candidates[0].daysAgo, 1)
 })

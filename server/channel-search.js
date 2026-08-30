@@ -107,7 +107,10 @@ function findFirstKey(node, key, depth = 0) {
 const PUBLIC_INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8'
 
 // Lấy danh sách video của channel (nhiều trang qua continuation). Trả channelName + videos.
-export async function fetchChannelVideos(url, { maxPages = 3 } = {}) {
+// Mặc định quét sâu (không chỉ vài trang đầu) để không bỏ sót phim cũ nằm sau trong danh sách —
+// dừng khi hết continuation (kênh đã quét xong), chạm trần an toàn, hoặc quá ngân sách thời gian.
+export async function fetchChannelVideos(url, { maxPages = 60, maxVideos = 2000, timeBudgetMs = 20000 } = {}) {
+  const startedAt = Date.now()
   const pageUrl = channelVideosUrl(url)
   const html = await fetch(pageUrl, { headers: { 'User-Agent': UA, 'Accept-Language': 'vi,en;q=0.8' } }).then(r => r.text())
   const data = extractJsonAfter(html, 'var ytInitialData = ')
@@ -122,7 +125,7 @@ export async function fetchChannelVideos(url, { maxPages = 3 } = {}) {
   const clientVersion = cfg?.INNERTUBE_CLIENT_VERSION || '2.20240101.00.00'
 
   let pages = 1
-  while (cont && pages < maxPages && videos.length < 300) {
+  while (cont && pages < maxPages && videos.length < maxVideos && Date.now() - startedAt < timeBudgetMs) {
     try {
       const res = await fetch('https://www.youtube.com/youtubei/v1/browse?key=' + apiKey, {
         method: 'POST',
@@ -181,7 +184,8 @@ async function pickWithGemini({ apiKey, model, prompt, candidates }) {
     .join('\n')
   const body = JSON.stringify({
     contents: [{ parts: [{ text: prompt + '\n\nDANH SÁCH VIDEO:\n' + list }] }],
-    generationConfig: { responseMimeType: 'application/json', responseSchema: SEARCH_SCHEMA },
+    // Phim nhiều tập trả về hàng trăm url — nới trần output để JSON không bị cắt cụt giữa chừng
+    generationConfig: { responseMimeType: 'application/json', responseSchema: SEARCH_SCHEMA, maxOutputTokens: 32768 },
   })
   let lastErr
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -206,30 +210,46 @@ async function pickWithGemini({ apiKey, model, prompt, candidates }) {
   throw lastErr
 }
 
-// Tìm kiếm clip từ 1 channel. sortBy: 'views' | 'date'. keyword: tùy chọn.
-// Không giới hạn số lượng — trả về TẤT CẢ video phim phù hợp, user tự chọn dùng.
-export async function searchChannel(url, { apiKey, model, sortBy = 'views', keyword = '', language } = {}) {
-  if (!isChannelUrl(url)) throw new Error('Link không phải link channel hợp lệ (cần dạng youtube.com/channel/... hoặc /@...)')
-  if (!apiKey) throw new Error('Chưa có Gemini API key — vào Cài đặt (⚙️) để nhập')
-  const { channelName, videos } = await fetchChannelVideos(url)
-  if (!videos.length) throw new Error('Không tìm thấy video công khai nào trong kênh này')
+// So khớp từ khóa không dấu, không phân biệt hoa thường
+// đ/Đ là chữ cái riêng của tiếng Việt (không phải "d" + dấu) nên NFD không tự tách được —
+// phải đổi tay trước, không thì gõ "dau" sẽ không khớp "Đấu" (đúng kiểu lỗi lúc được lúc không).
+const norm = s => String(s || '').toLowerCase().replace(/đ/g, 'd').normalize('NFD').replace(/[̀-ͯ]/g, '')
 
-  // Lọc theo từ khóa (nếu có) — không dấu, không phân biệt hoa thường
-  const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+// Chọn + sắp ứng viên đưa cho AI. Nếu khớp được từ khóa (vd tên phim cụ thể) thì KHÔNG cắt
+// bớt — một phim dài 200+ tập vẫn phải gửi đủ hết, chỉ chặn ở một trần an toàn rất cao để
+// tránh phình quá lớn khi khớp nhầm; không có/không khớp từ khóa thì giới hạn số ứng viên
+// cho nhanh + đỡ tốn token vì lúc đó AI phải tự lọc theo nghĩa trên toàn bộ danh sách.
+export function selectCandidates(videos, { sortBy = 'views', keyword = '' } = {}) {
+  const kw = String(keyword || '').trim()
   let cand = videos
-  if (keyword.trim()) {
-    const kw = norm(keyword)
-    const hit = videos.filter(v => norm(v.title).includes(kw))
-    cand = hit.length ? hit : videos // không khớp thì để AI tự lọc theo nghĩa
+  let matchedByKeyword = false
+  if (kw) {
+    const nkw = norm(kw)
+    const hit = videos.filter(v => norm(v.title).includes(nkw))
+    if (hit.length) { cand = hit; matchedByKeyword = true }
   }
-  // Sắp theo tiêu chí: lượt xem / mới nhất / số tập tăng dần
   const sortFn =
     sortBy === 'date' ? (a, b) => a.daysAgo - b.daysAgo :
     sortBy === 'episode' ? (a, b) => parseEpisodeNumber(a.title) - parseEpisodeNumber(b.title) || b.views - a.views :
     (a, b) => b.views - a.views
   cand = [...cand].sort(sortFn)
-  // Đưa cho AI tối đa 100 ứng viên đầu để chọn (không giới hạn số lượng chọn ra)
-  const candidates = cand.slice(0, 100)
+  const cap = matchedByKeyword ? 500 : 150
+  return { candidates: cand.slice(0, cap), matchedByKeyword }
+}
+
+// Tìm kiếm clip từ 1 channel. sortBy: 'views' | 'date' | 'episode'. keyword: tùy chọn.
+// Không giới hạn số lượng — trả về TẤT CẢ video phim phù hợp, user tự chọn dùng.
+export async function searchChannel(url, { apiKey, model, sortBy = 'views', keyword = '', language } = {}) {
+  if (!isChannelUrl(url)) throw new Error('Link không phải link channel hợp lệ (cần dạng youtube.com/channel/... hoặc /@...)')
+  if (!apiKey) throw new Error('Chưa có Gemini API key — vào Cài đặt (⚙️) để nhập')
+  // Có tên phim cụ thể cần tìm -> quét sâu hơn (phim cũ có thể nằm rất sau trong danh sách kênh)
+  const scanOpts = keyword.trim()
+    ? { maxPages: 150, maxVideos: 4500, timeBudgetMs: 28000 }
+    : { maxPages: 40, maxVideos: 1200, timeBudgetMs: 15000 }
+  const { channelName, videos } = await fetchChannelVideos(url, scanOpts)
+  if (!videos.length) throw new Error('Không tìm thấy video công khai nào trong kênh này')
+
+  const { candidates } = selectCandidates(videos, { sortBy, keyword })
 
   const prompt = buildSearchPrompt({ keyword, sortBy, language })
   const picked = await pickWithGemini({ apiKey, model, prompt, candidates })
