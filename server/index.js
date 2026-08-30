@@ -424,32 +424,6 @@ app.post('/api/channel-search', async (req, res) => {
   res.status(422).json({ ok: false, message: lastErr?.message || 'Tìm kiếm thất bại' })
 })
 
-// Link đã lưu để dùng lại sau (lưu trong config, mỗi máy một danh sách).
-app.get('/api/saved-links', (req, res) => {
-  const cfg = loadConfig()
-  res.json({ ok: true, links: Array.isArray(cfg.savedLinks) ? cfg.savedLinks : [] })
-})
-app.post('/api/saved-links', (req, res) => {
-  const cfg = loadConfig()
-  let links = Array.isArray(cfg.savedLinks) ? cfg.savedLinks : []
-  if (req.body?.clear) {
-    links = []
-  } else if (typeof req.body?.remove === 'string') {
-    links = links.filter(l => l.url !== req.body.remove)
-  } else if (Array.isArray(req.body?.add)) {
-    const have = new Set(links.map(l => l.url))
-    for (const it of req.body.add) {
-      const url = String(it?.url || '').trim()
-      if (url && isYouTubeUrl(url) && !have.has(url)) {
-        have.add(url)
-        links.push({ url, title: String(it?.title || '').slice(0, 300), savedAt: Date.now() })
-      }
-    }
-  }
-  saveConfig({ savedLinks: links })
-  res.json({ ok: true, links })
-})
-
 // Kiểm tra tính hợp lệ của từng Gemini API key (key gửi lên, hoặc key đã lưu nếu không gửi).
 // Trả về key ĐÃ CHE (không lộ nguyên key) + trạng thái.
 app.post('/api/check-keys', async (req, res) => {
@@ -508,6 +482,32 @@ app.post('/api/save-json', (req, res) => {
   res.json({ ok: true, saved, folder })
 })
 
+// Lưu 1 file .txt thẳng vào thư mục (không qua hộp thoại "Save as" của trình duyệt) —
+// dùng cho "Lưu file .txt" ở tab Tìm kiếm clip. Không lưu gì trong config/app: đóng/refresh
+// app là mất hết state, file .txt trên máy là nơi duy nhất giữ lại danh sách video.
+app.post('/api/save-text', (req, res) => {
+  const folder = String(req.body?.folder || '').trim() || defaultFolder
+  const content = typeof req.body?.content === 'string' ? req.body.content : ''
+  const overwrite = req.body?.overwrite === true
+  const base = sanitizeFilename(String(req.body?.filename || 'ket-qua')) || 'ket-qua'
+  const file = base.toLowerCase().endsWith('.txt') ? base : base + '.txt'
+  if (!overwrite) {
+    try {
+      if (fs.existsSync(path.join(folder, file))) return res.json({ ok: false, conflict: true, conflicts: [file], folder })
+    } catch {}
+  }
+  try {
+    fs.mkdirSync(folder, { recursive: true })
+  } catch (e) {
+    return res.status(422).json({ ok: false, message: 'Không tạo được thư mục: ' + e.message })
+  }
+  try {
+    fs.writeFileSync(path.join(folder, file), content, 'utf8')
+  } catch (e) {
+    return res.status(422).json({ ok: false, message: 'Lỗi ghi file: ' + e.message })
+  }
+  res.json({ ok: true, saved: file, folder })
+})
 
 // ===== Cắt clip theo phân tích AI (Gemini) =====
 

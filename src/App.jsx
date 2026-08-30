@@ -75,8 +75,6 @@ export default function App() {
   const [searchKeyword, setSearchKeyword] = useState('')
   const [searchResults, setSearchResults] = useState({})
   const [searching, setSearching] = useState(false)
-  const [savedLinks, setSavedLinks] = useState([])
-  const [showSaved, setShowSaved] = useState(false)
   const pollRef = useRef(null)
 
   const refresh = async () => {
@@ -98,8 +96,6 @@ export default function App() {
       .then(r => r.json())
       .then(setSettings)
       .catch(() => {})
-    // Nạp link đã lưu (để dùng lại sau)
-    fetch(`${API}/api/saved-links`).then(r => r.json()).then(d => setSavedLinks(d.links || [])).catch(() => {})
     // Đồng bộ danh sách job ngay khi mở app — tránh hiện job "ma" từ phiên trước
     refresh().catch(() => {})
     return () => clearInterval(pollRef.current)
@@ -351,22 +347,6 @@ export default function App() {
   const addChannel = () => setChannelRows(cs => [...cs, newChan()])
   const removeChannel = key => setChannelRows(cs => (cs.length === 1 ? cs : cs.filter(c => c.key !== key)))
   const updateChannel = (key, url) => setChannelRows(cs => cs.map(c => (c.key === key ? { ...c, url } : c)))
-  const pasteChannels = async () => {
-    try {
-      const text = await navigator.clipboard.readText()
-      const found = text.split(/[\s,]+/).filter(x => isChannelUrl(x))
-      if (!found.length) { alert('Clipboard không có link channel nào (dạng youtube.com/channel/... hoặc /@...)'); return }
-      setChannelRows(cs => {
-        const have = new Set(cs.map(c => c.url.trim()).filter(Boolean))
-        const fresh = found.filter(u => !have.has(u))
-        const out = cs.map(c => ({ ...c }))
-        let i = 0
-        for (const c of out) if (!c.url.trim() && i < fresh.length) c.url = fresh[i++]
-        while (i < fresh.length) out.push({ ...newChan(), url: fresh[i++] })
-        return out
-      })
-    } catch { alert('Không đọc được clipboard') }
-  }
 
   const validChannels = channelRows.filter(c => isChannelUrl(c.url))
   const runSearch = async () => {
@@ -429,27 +409,40 @@ export default function App() {
     if (over) setTimeout(() => alert('Tab Phân tích tối đa ' + rowLimit + ' link — đã đưa ' + rowLimit + ' link đầu, phần còn lại lưu/để dành nhé.'), 50)
   }
 
-  // Lưu link để dùng lại sau (lưu vào config trên máy)
-  const saveLinks = async videos => {
-    const add = videos.map(v => ({ url: v.url, title: v.title }))
-    if (!add.length) return
-    const res = await fetch(`${API}/api/saved-links`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ add }),
-    }).then(r => r.json())
-    if (res.ok) { setSavedLinks(res.links); setShowSaved(true); alert('Đã lưu — tổng cộng ' + res.links.length + ' link đã lưu.') }
+  // Lưu danh sách video ra file .txt — KHÔNG lưu trong app (refresh/tắt app là mất hết state,
+  // đây là nơi duy nhất giữ lại được). Mỗi lần bấm đều hỏi thư mục lưu bằng hộp thoại native
+  // của Windows; trùng tên file thì hỏi ghi đè để không mất bản cũ.
+  const pad2 = n => String(n).padStart(2, '0')
+  const ddmmyyyy = () => {
+    const d = new Date()
+    return pad2(d.getDate()) + pad2(d.getMonth() + 1) + d.getFullYear()
   }
-  const removeSaved = async url => {
-    const res = await fetch(`${API}/api/saved-links`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ remove: url }),
+  const doSaveText = async (folder, filename, content) => {
+    let res = await fetch(`${API}/api/save-text`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder, filename, content }),
     }).then(r => r.json())
-    if (res.ok) setSavedLinks(res.links)
+    if (res.conflict) {
+      const ok = confirm('Thư mục đã có sẵn file "' + res.conflicts[0] + '".\n\nGhi đè lên file cũ? (Hủy để chọn thư mục khác)')
+      if (!ok) return null
+      res = await fetch(`${API}/api/save-text`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder, filename, content, overwrite: true }),
+      }).then(r => r.json())
+    }
+    return res
   }
-  const clearSaved = async () => {
-    if (!confirm('Xóa hết link đã lưu?')) return
-    const res = await fetch(`${API}/api/saved-links`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }),
-    }).then(r => r.json())
-    if (res.ok) setSavedLinks(res.links)
+  const exportVideoListTxt = async (channelResult, videos) => {
+    if (!videos.length) return
+    const d = await fetch(`${API}/api/pick-folder`).then(r => r.json())
+    if (!d.folder) return // người dùng bấm Hủy trên hộp thoại chọn thư mục
+    const title = channelResult.channelName || channelResult.url || 'kenh'
+    const filename = `list videos của ${title} -${ddmmyyyy()}`
+    const content = videos.map(v => (v.title ? v.title + '\n' : '') + v.url).join('\n\n')
+    const res = await doSaveText(d.folder, filename, content)
+    if (!res) return
+    if (res.ok) alert('Đã lưu: ' + res.saved + '\n' + res.folder)
+    else alert('Lỗi lưu file: ' + res.message)
   }
 
   const analyzeAll = async () => {
@@ -641,6 +634,21 @@ export default function App() {
 
   const analyzingCount = rows.filter(r => analysis[r.key]?.status === 'analyzing').length
 
+  // App không có menu/phím tắt Reload (menu bar bị ẩn) nên đây là cách duy nhất "làm mới"
+  // mà không phải tắt hẳn app. Backend + job đang chạy KHÔNG bị ảnh hưởng (server sống độc
+  // lập với giao diện) — chỉ có state trong React (link, kết quả) là mất, nên cảnh báo trước.
+  const requestReload = () => {
+    const busy = hasRunning || analyzingCount > 0 || searching
+    const hasUnsavedData = Object.keys(analysis).length > 0 || Object.keys(searchResults).length > 0
+    if (busy || hasUnsavedData) {
+      const msg = busy
+        ? 'ĐANG XỬ LÝ (tải/cắt/phân tích/tìm kiếm)! Làm mới giao diện sẽ mất mọi kết quả CHƯA LƯU đang hiển thị (tiến trình tải/cắt trên máy vẫn tiếp tục chạy). Vẫn làm mới?'
+        : 'Đang có kết quả phân tích/tìm kiếm CHƯA LƯU. Làm mới giao diện sẽ MẤT HẾT, không khôi phục lại được. Vẫn làm mới?'
+      if (!confirm(msg)) return
+    }
+    window.location.reload()
+  }
+
   return (
     <div className="app">
       <header className="hero">
@@ -654,6 +662,7 @@ export default function App() {
           <button className={mode === 'search' ? 'active' : ''} onClick={() => setMode('search')}>🔎 Tìm kiếm clip</button>
           <button className={mode === 'analyze' ? 'active' : ''} onClick={() => setMode('analyze')}>🔍 Phân tích</button>
           <button className={mode === 'cut' ? 'active' : ''} onClick={() => setMode('cut')}>✂️ Cắt clip</button>
+          <button className="btn-icon" title="Làm mới giao diện (app không có menu Reload sẵn)" onClick={requestReload}>🔄</button>
           <button className="btn-icon gear" title="Sửa prompt hỏi AI" onClick={() => setSettingsOpen(true)}>⚙️</button>
         </div>
       </header>
@@ -883,30 +892,6 @@ export default function App() {
 
       {mode === 'search' && (
         <>
-        {savedLinks.length > 0 && (
-          <div className="saved-panel">
-            <div className="saved-head">
-              <button onClick={() => setShowSaved(v => !v)}>📌 Link đã lưu ({savedLinks.length}) {showSaved ? '▲' : '▼'}</button>
-              {showSaved && (
-                <>
-                  <button onClick={() => copyUrls('saved', savedLinks.map(l => l.url))}>{copiedKey === 'saved' ? '✓ Đã copy!' : '📋 Copy tất cả'}</button>
-                  <button className="primary" onClick={() => sendToAnalyze(savedLinks.map(l => l.url))}>➡ Đưa sang Phân tích</button>
-                  <button className="btn-clear-all" onClick={clearSaved}>🗑 Xóa hết</button>
-                </>
-              )}
-            </div>
-            {showSaved && (
-              <div className="sr-list">
-                {savedLinks.map(l => (
-                  <div className="sr-item" key={l.url}>
-                    <a href={l.url} target="_blank" rel="noreferrer">{l.title || l.url}</a>
-                    <button className="btn-icon" title="Bỏ khỏi danh sách đã lưu" onClick={() => removeSaved(l.url)} style={{ marginLeft: 'auto' }}>✕</button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
         <div className={'card' + (searching ? ' locked' : '')}>
           {searching && <div className="locked-note">🔎 Đang tìm — chờ AI quét kênh xong nhé</div>}
           <div className="rows">
@@ -929,7 +914,6 @@ export default function App() {
           </div>
           <div className="actions">
             <button onClick={addChannel} disabled={searching}>＋ Thêm channel</button>
-            <button onClick={pasteChannels} disabled={searching}>📋 Dán nhiều channel</button>
           </div>
           <div className="search-opts">
             <span className="json-lbl">Tiêu chí:</span>
@@ -966,7 +950,7 @@ export default function App() {
                     <div className="sr-tools">
                       <button onClick={() => toggleSearchAll(c.key, urls)}>{urls.every(u => r.selected.has(u)) ? 'Bỏ chọn hết' : 'Chọn hết'}</button>
                       <button onClick={() => copyUrls('sc-' + c.key, r.selected.size ? [...r.selected] : urls)}>{copiedKey === ('sc-' + c.key) ? '✓ Đã copy!' : ('📋 Copy ' + (r.selected.size ? 'đã chọn (' + r.selected.size + ')' : 'tất cả'))}</button>
-                      <button onClick={() => saveLinks(r.videos.filter(v => !r.selected.size || r.selected.has(v.url)))}>💾 Lưu link ({r.selected.size || urls.length})</button>
+                      <button onClick={() => exportVideoListTxt(r, r.videos.filter(v => !r.selected.size || r.selected.has(v.url)))}>💾 Lưu file .txt ({r.selected.size || urls.length})</button>
                       <button className="primary" onClick={() => sendToAnalyze(r.selected.size ? [...r.selected] : urls)}>➡ Đưa sang Phân tích ({r.selected.size || urls.length})</button>
                     </div>
                     <div className="sr-list">
