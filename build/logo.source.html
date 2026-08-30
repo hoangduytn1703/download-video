@@ -1,0 +1,31 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;padding:0;background:transparent}
+svg{display:block;width:1024px;height:1024px}
+</style></head><body>
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="0.55" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#ec4899"/>
+    </linearGradient>
+    <filter id="sh" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#000" flood-opacity="0.20"/>
+    </filter>
+  </defs>
+  <circle cx="256" cy="256" r="256" fill="url(#bg)"/>
+  <g filter="url(#sh)">
+    <!-- Chữ Y đậm -->
+    <text x="232" y="352" font-family="'Arial Black','Segoe UI',Arial,sans-serif" font-weight="900" font-size="330" text-anchor="middle" fill="#fff">Y</text>
+    <!-- Icon download đè lên chân phải chữ Y (~50%) -->
+    <g fill="#fff">
+      <!-- thân mũi tên -->
+      <rect x="322" y="212" width="52" height="132" rx="26"/>
+      <!-- đầu mũi tên -->
+      <path d="M300 320 h96 l-48 62 z"/>
+      <!-- khay hứng -->
+      <path d="M286 372 v34 a18 18 0 0 0 18 18 h88 a18 18 0 0 0 18 -18 v-34" fill="none" stroke="#fff" stroke-width="34" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>
+</body></html>

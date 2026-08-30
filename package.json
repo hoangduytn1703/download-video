@@ -1,7 +1,7 @@
 {
   "name": "cut-youtube",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Tải video YouTube 1080p hàng loạt — đặt tên file và chọn thư mục cho từng link",
   "author": "Nguyễn Hoàng Duy",
   "type": "module",
@@ -49,7 +49,8 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "icon": "build/icon.png"
     },
     "nsis": {
       "oneClick": false,
@@ -58,7 +59,9 @@
       "createDesktopShortcut": true,
       "shortcutName": "Youtube Download Tool",
       "differentialPackage": true,
-      "artifactName": "YoutubeDownloadTool-Setup-${version}.exe"
+      "artifactName": "YoutubeDownloadTool-Setup-${version}.exe",
+      "installerIcon": "build/icon.png",
+      "uninstallerIcon": "build/icon.png"
     },
     "portable": {
       "artifactName": "YoutubeDownloadTool-portable-${version}.exe"

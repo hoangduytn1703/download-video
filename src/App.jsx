@@ -644,7 +644,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="hero">
-        <h1><span className="logo">▶</span>Youtube<span className="grad">Download Tool</span></h1>
+        <h1><img className="logo-img" src={import.meta.env.BASE_URL + 'logo.png'} alt="logo" />Youtube<span className="grad">Download Tool</span></h1>
         <p className="hint">
           {mode === 'analyze'
             ? 'Dán link → Phân tích → nhận text kết quả cắt → Copy / Lưu .txt. Muốn cắt thì qua tab Cắt clip 📋'
