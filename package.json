@@ -59,9 +59,7 @@
       "createDesktopShortcut": true,
       "shortcutName": "Youtube Download Tool",
       "differentialPackage": true,
-      "artifactName": "YoutubeDownloadTool-Setup-${version}.exe",
-      "installerIcon": "build/icon.png",
-      "uninstallerIcon": "build/icon.png"
+      "artifactName": "YoutubeDownloadTool-Setup-${version}.exe"
     },
     "portable": {
       "artifactName": "YoutubeDownloadTool-portable-${version}.exe"
