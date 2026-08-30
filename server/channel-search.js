@@ -157,9 +157,11 @@ function buildSearchPrompt({ keyword, sortBy, language }) {
       : 'NHIỆM VỤ: chọn ra TẤT CẢ video là PHIM / tập phim / truyện phim / phim chiếu mạng / review phim có nội dung kể chuyện. Đừng giới hạn số lượng, có bao nhiêu video phù hợp thì lấy hết.',
     kw ? ('CHỈ chọn video có TÊN PHIM liên quan tới: "' + kw + '" (bỏ qua phim khác).') : '',
     'LOẠI BỎ: video không phải phim (nhạc, vlog, tin tức, thể thao, gameshow, trailer ngắn, tổng hợp, livestream).',
-    'Nếu kênh này KHÔNG có nội dung phù hợp thì trả về suitable=false, videos rỗng, và reason ngắn gọn.',
+    'Nếu kênh này KHÔNG có nội dung phù hợp thì trả về suitable=false, indices rỗng, và reason ngắn gọn.',
     'Giữ nguyên thứ tự như trong danh sách đưa vào (đã được sắp theo tiêu chí người dùng chọn).',
-    'Chỉ trả về các url có trong danh sách, không bịa.',
+    // Trả về SỐ THỨ TỰ thay vì url/tên đầy đủ — kênh có thể có hàng trăm/nghìn video khớp,
+    // nhắc lại url + tiêu đề dài cho từng cái rất tốn output token và dễ bị cắt cụt giữa chừng.
+    'Mỗi video trong DANH SÁCH đều có SỐ THỨ TỰ ở đầu dòng (1. 2. 3. ...). Trả lời bằng "indices" là mảng CÁC SỐ THỨ TỰ đó (không phải url, không phải tên) của những video bạn chọn — ví dụ [3, 7, 8, 12]. Không bịa số không có trong danh sách.',
     languageBlock(language),
   ].filter(Boolean).join('\n')
 }
@@ -169,12 +171,9 @@ const SEARCH_SCHEMA = {
   properties: {
     suitable: { type: 'boolean' },
     reason: { type: 'string' },
-    videos: {
-      type: 'array',
-      items: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' } }, required: ['url'] },
-    },
+    indices: { type: 'array', items: { type: 'integer' } },
   },
-  required: ['suitable', 'videos'],
+  required: ['suitable', 'indices'],
 }
 
 // Gọi Gemini chọn video (JSON). Retry khi model "high demand" (503) — giống analyzeVideo.
@@ -184,8 +183,9 @@ async function pickWithGemini({ apiKey, model, prompt, candidates }) {
     .join('\n')
   const body = JSON.stringify({
     contents: [{ parts: [{ text: prompt + '\n\nDANH SÁCH VIDEO:\n' + list }] }],
-    // Phim nhiều tập trả về hàng trăm url — nới trần output để JSON không bị cắt cụt giữa chừng
-    generationConfig: { responseMimeType: 'application/json', responseSchema: SEARCH_SCHEMA, maxOutputTokens: 32768 },
+    // Trả về số thứ tự (không phải url/title) nên output rất nhẹ dù chọn hàng nghìn video;
+    // vẫn để trần cao để chắc chắn không bao giờ bị cắt cụt.
+    generationConfig: { responseMimeType: 'application/json', responseSchema: SEARCH_SCHEMA, maxOutputTokens: 16384 },
   })
   let lastErr
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -198,7 +198,7 @@ async function pickWithGemini({ apiKey, model, prompt, candidates }) {
     if (res.ok) {
       const data = await res.json()
       const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || ''
-      try { return JSON.parse(text) } catch { return { suitable: false, reason: 'AI trả kết quả không đọc được', videos: [] } }
+      try { return JSON.parse(text) } catch { return { suitable: false, reason: 'AI trả kết quả không đọc được', indices: [] } }
     }
     let detail = `HTTP ${res.status}`
     try { const b = await res.json(); if (b?.error?.message) detail = b.error.message } catch {}
@@ -215,10 +215,12 @@ async function pickWithGemini({ apiKey, model, prompt, candidates }) {
 // phải đổi tay trước, không thì gõ "dau" sẽ không khớp "Đấu" (đúng kiểu lỗi lúc được lúc không).
 const norm = s => String(s || '').toLowerCase().replace(/đ/g, 'd').normalize('NFD').replace(/[̀-ͯ]/g, '')
 
-// Chọn + sắp ứng viên đưa cho AI. Nếu khớp được từ khóa (vd tên phim cụ thể) thì KHÔNG cắt
-// bớt — một phim dài 200+ tập vẫn phải gửi đủ hết, chỉ chặn ở một trần an toàn rất cao để
-// tránh phình quá lớn khi khớp nhầm; không có/không khớp từ khóa thì giới hạn số ứng viên
-// cho nhanh + đỡ tốn token vì lúc đó AI phải tự lọc theo nghĩa trên toàn bộ danh sách.
+// Chọn + sắp ứng viên đưa cho AI. Nếu khớp được từ khóa (vd tên phim cụ thể) thì gần như
+// không cắt — một franchise dài cả nghìn tập (channel chỉ đăng đúng 1 phim) vẫn phải gửi đủ
+// hết; vì AI chỉ trả về SỐ THỨ TỰ (không phải url/title) nên gửi nhiều ứng viên hơn không
+// làm output phình to, chỉ tốn thêm input token nên vẫn đặt một trần an toàn cao (2000).
+// Không có/không khớp từ khóa thì giới hạn số ứng viên cho nhanh + đỡ tốn token vì lúc đó
+// AI phải tự lọc theo nghĩa trên toàn bộ danh sách.
 export function selectCandidates(videos, { sortBy = 'views', keyword = '' } = {}) {
   const kw = String(keyword || '').trim()
   let cand = videos
@@ -233,7 +235,7 @@ export function selectCandidates(videos, { sortBy = 'views', keyword = '' } = {}
     sortBy === 'episode' ? (a, b) => parseEpisodeNumber(a.title) - parseEpisodeNumber(b.title) || b.views - a.views :
     (a, b) => b.views - a.views
   cand = [...cand].sort(sortFn)
-  const cap = matchedByKeyword ? 500 : 150
+  const cap = matchedByKeyword ? 2000 : 150
   return { candidates: cand.slice(0, cap), matchedByKeyword }
 }
 
@@ -253,12 +255,11 @@ export async function searchChannel(url, { apiKey, model, sortBy = 'views', keyw
 
   const prompt = buildSearchPrompt({ keyword, sortBy, language })
   const picked = await pickWithGemini({ apiKey, model, prompt, candidates })
-  // chỉ giữ url thật sự có trong danh sách (không bịa), giữ đúng thứ tự AI trả
-  const byUrl = new Map(videos.map(v => [v.url, v]))
-  const idOf = u => { try { return new URL(u).searchParams.get('v') } catch { return null } }
+  // AI trả về số thứ tự trong "candidates" (1-based, đúng số đã đánh trong danh sách gửi đi)
+  // — ánh xạ thẳng về candidates, không cần đoán/khớp url nên không sợ AI gõ sai chuỗi.
   const seen = new Set()
-  let results = (picked.videos || [])
-    .map(x => byUrl.get(x.url) || videos.find(v => v.id === idOf(x.url)))
+  let results = (picked.indices || [])
+    .map(i => candidates[i - 1])
     .filter(v => v && !seen.has(v.id) && seen.add(v.id))
     .map(v => ({ url: v.url, title: v.title, views: v.views, publishedText: v.publishedText }))
   // Tiêu chí tập phim: đảm bảo thứ tự tập tăng dần dù AI trả lộn xộn
