@@ -1,6 +1,27 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isTikTokUrl, tiktokHandle, tiktokProfileUrl, parseTikTokStats, looksBlocked, appendSnapshot, summarizeHistory, dayKey } from './tiktok.js'
+import { isTikTokUrl, tiktokHandle, tiktokProfileUrl, parseTikTokStats, looksBlocked, appendSnapshot, summarizeHistory, dayKey, verifyTikTokPassword, hashTikTokPassword } from './tiktok.js'
+import { parseTikTokInputs } from '../src/tiktok-url.js'
+
+// Mã băm của mật khẩu thử "abc" (không dùng mật khẩu thật trong test — repo public)
+const HASH_ABC = 'f85a6ffc075ae3971efa8f8fe6f8329df1ee1a628fdc0868a1e60ecb7218460f'
+
+test('verifyTikTokPassword: đúng/sai/rỗng, không lộ mật khẩu dạng chữ', () => {
+  assert.equal(hashTikTokPassword('abc'), HASH_ABC)
+  assert.equal(verifyTikTokPassword('abc', HASH_ABC), true)
+  assert.equal(verifyTikTokPassword('abd', HASH_ABC), false)
+  assert.equal(verifyTikTokPassword('', HASH_ABC), false)
+  assert.equal(verifyTikTokPassword(undefined, HASH_ABC), false)
+  assert.equal(verifyTikTokPassword('abc'), false, 'mã băm mặc định không phải của "abc"')
+})
+
+test('parseTikTokInputs: nhiều link, bỏ trùng, gom token sai; chữ trần chỉ nhận khi nhập 1 token', () => {
+  const r = parseTikTokInputs('https://www.tiktok.com/@a1\n@b2, https://tiktok.com/@a1/ ; https://www.tiktok.com/@c3/video/1 xem kenh nay')
+  assert.deepEqual(r.urls, ['https://www.tiktok.com/@a1', 'https://www.tiktok.com/@b2'])
+  assert.deepEqual(r.invalid, ['https://www.tiktok.com/@c3/video/1', 'xem', 'kenh', 'nay'])
+  assert.deepEqual(parseTikTokInputs('waineii17'), { urls: ['https://www.tiktok.com/@waineii17'], invalid: [] })
+  assert.deepEqual(parseTikTokInputs(''), { urls: [], invalid: [] })
+})
 
 // Cấu trúc rút gọn đúng như trang hồ sơ thật (stats làm tròn, statsV2 chính xác dạng chuỗi)
 const page = (userInfo, extra = '') => `<html><head></head><body>

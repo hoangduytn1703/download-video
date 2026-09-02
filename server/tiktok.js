@@ -10,9 +10,24 @@
 // YouTube). Dùng statsV2 (số chính xác dạng chuỗi) thay cho stats (số đã làm tròn để hiển thị) —
 // theo dõi tăng/giảm từng ngày cần số chính xác, số làm tròn sẽ che mất chênh lệch nhỏ.
 import { spawn } from 'child_process'
+import crypto from 'crypto'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+
+// ===== Khóa tính năng bằng mật khẩu =====
+// Chỉ lưu mã băm (SHA-256 + salt), không có mật khẩu dạng chữ trong code/repo. So sánh timing-safe.
+const TIKTOK_PASS_SALT = 'ytdl-tiktok-gate-v1'
+export const TIKTOK_PASS_SHA256 = 'ae75acada6bd0a756463611b52f0ec9ef004cf3636be4ecbd1a026f17a69b1b2'
+export function hashTikTokPassword(p) {
+  return crypto.createHash('sha256').update(TIKTOK_PASS_SALT + ':' + String(p ?? '')).digest('hex')
+}
+export function verifyTikTokPassword(input, expectedHex = TIKTOK_PASS_SHA256) {
+  if (typeof input !== 'string' || !input) return false
+  const a = Buffer.from(hashTikTokPassword(input), 'hex')
+  const b = Buffer.from(String(expectedHex), 'hex')
+  return a.length === b.length && crypto.timingSafeEqual(a, b)
+}
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
 

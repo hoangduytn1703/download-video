@@ -742,6 +742,13 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-
 .tt-hist td.up { color: #4ade80; }
 .tt-hist td.down { color: #fb7185; }
 .tt-empty { color: #a9adc4; text-align: center; padding: 26px 10px; }
+.tt-textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 56px; font-family: inherit; line-height: 1.45; margin: 0; }
+.tt-progress { margin-top: 12px; }
+.tt-progress .bar-fill { transition: width 0.35s ease; }
+.tt-progress-txt { font-size: 12.5px; color: #a9adc4; margin-top: 5px; }
+.tt-pass { width: 100%; box-sizing: border-box; margin-top: 14px; text-align: center; letter-spacing: 2px; }
+.tt-pass-actions { justify-content: center; margin-top: 14px; }
+.tt-pass-actions .primary { margin-left: 0; margin-top: 0; }
 @media (max-width: 720px) { .tt-card { grid-template-columns: 44px 1fr; } .tt-tools { grid-column: 1 / -1; justify-content: flex-start; } }
 
 /* Logo app trên header */

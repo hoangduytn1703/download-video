@@ -10,7 +10,7 @@ import { fetchTranscript } from './transcript.js'
 import { segCountBlock } from '../src/parse.js'
 import { searchChannel, isChannelUrl } from './channel-search.js'
 import { loadCookie, saveCookie, clearCookie, parseCookieInput, checkLogin, probeAsk, analyzeViaCookieAsk, NO_COOKIE_MESSAGE, debugDirPath } from './youtube-cookie.js'
-import { isTikTokUrl, tiktokHandle, tiktokProfileUrl, fetchTikTokStats, appendSnapshot, summarizeHistory } from './tiktok.js'
+import { isTikTokUrl, tiktokHandle, tiktokProfileUrl, fetchTikTokStats, appendSnapshot, summarizeHistory, verifyTikTokPassword } from './tiktok.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT) || 3001
@@ -529,14 +529,32 @@ function tiktokItemView(item) {
   }
 }
 
-app.get('/api/tiktok/tracked', (req, res) => {
+// Khóa tính năng bằng mật khẩu: kiểm tra ở server (chỉ có mã băm trong code), mở 1 lần là nhớ
+// trên máy (config.tiktokUnlocked). Các endpoint dữ liệu đều đòi đã mở khóa.
+app.get('/api/tiktok/status', (req, res) => {
+  res.json({ ok: true, unlocked: loadConfig().tiktokUnlocked === true })
+})
+app.post('/api/tiktok/unlock', async (req, res) => {
+  if (!verifyTikTokPassword(req.body?.password)) {
+    await new Promise(r => setTimeout(r, 900)) // làm chậm đoán mò
+    return res.status(403).json({ ok: false, message: 'Sai mật khẩu' })
+  }
+  saveConfig({ tiktokUnlocked: true })
+  res.json({ ok: true, unlocked: true })
+})
+const requireTikTokUnlock = (req, res, next) => {
+  if (loadConfig().tiktokUnlocked === true) return next()
+  res.status(403).json({ ok: false, locked: true, message: 'Tính năng đang khóa — nhập mật khẩu ở tab TikTok' })
+}
+
+app.get('/api/tiktok/tracked', requireTikTokUnlock, (req, res) => {
   const list = tiktokTrackedList(loadConfig())
   res.json({ ok: true, items: list.map(tiktokItemView) })
 })
 
 // Kiểm tra 1 kênh: lấy số liệu hiện tại, ghi mốc hôm nay, trả về kèm chênh lệch so với mốc ngày trước.
 // Kênh chưa theo dõi thì thêm vào danh sách luôn (bấm "Theo dõi").
-app.post('/api/tiktok/check', async (req, res) => {
+app.post('/api/tiktok/check', requireTikTokUnlock, async (req, res) => {
   const raw = String(req.body?.url || '').trim()
   const url = /^https?:\/\//i.test(raw) ? raw : (raw.startsWith('@') || /^[\w.\-]+$/.test(raw) ? tiktokProfileUrl(raw) : raw)
   if (!isTikTokUrl(url)) return res.status(400).json({ ok: false, message: 'Link không đúng dạng kênh TikTok (cần tiktok.com/@ten_kenh)' })
@@ -566,7 +584,7 @@ app.post('/api/tiktok/check', async (req, res) => {
   res.json({ ok: true, via: stats.via, item: tiktokItemView(item) })
 })
 
-app.post('/api/tiktok/remove', (req, res) => {
+app.post('/api/tiktok/remove', requireTikTokUnlock, (req, res) => {
   const handle = String(req.body?.handle || '').toLowerCase().replace(/^@/, '')
   const list = tiktokTrackedList(loadConfig()).filter(x => x.handle !== handle)
   saveConfig({ tiktokTracked: list })
