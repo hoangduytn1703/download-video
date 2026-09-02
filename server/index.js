@@ -542,6 +542,11 @@ app.post('/api/tiktok/unlock', async (req, res) => {
   saveConfig({ tiktokUnlocked: true })
   res.json({ ok: true, unlocked: true })
 })
+// Khóa lại (để kiểm tra dialog hoặc trước khi đưa máy cho người khác) — lần vào tab sau sẽ hỏi mật khẩu
+app.post('/api/tiktok/lock', (req, res) => {
+  saveConfig({ tiktokUnlocked: false })
+  res.json({ ok: true, unlocked: false })
+})
 const requireTikTokUnlock = (req, res, next) => {
   if (loadConfig().tiktokUnlocked === true) return next()
   res.status(403).json({ ok: false, locked: true, message: 'Tính năng đang khóa — nhập mật khẩu ở tab TikTok' })

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { getApiBase, runtime } from './api.js'
 import { isYouTubeUrl, parseVideoId, isChannelUrl } from './youtube.js'
-import { tiktokHandle, normalizeTikTokInput, parseTikTokInputs } from './tiktok-url.js'
+import { isTikTokUrl, tiktokHandle, tiktokProfileUrl, normalizeTikTokInput, parseTikTokInputs } from './tiktok-url.js'
 import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText, segmentsToJson } from './parse.js'
 
 export { isYouTubeUrl }
@@ -22,6 +22,8 @@ const SHOW_YOUTUBE_ASK = false
 let rowKey = 1
 let chanKey = 1
 const newChan = () => ({ key: chanKey++, url: '' })
+let ttRowKey = 1
+const newTtRow = () => ({ key: 'tt' + ttRowKey++, url: '' })
 const newRow = (folder = '') => ({ key: rowKey++, url: '', filename: '', folder, aiText: '', segCount: null })
 
 // giây -> "m:ss" / "h:mm:ss" để hiển thị trong ô sửa
@@ -77,7 +79,7 @@ export default function App() {
   const [searchResults, setSearchResults] = useState({})
   const [searching, setSearching] = useState(false)
   // Theo dõi TikTok: danh sách kênh + lịch sử lưu ở server (config), giao diện chỉ hiển thị
-  const [ttInput, setTtInput] = useState('')
+  const [ttRows, setTtRows] = useState(() => [newTtRow()]) // mỗi link một ô để validate từng dòng
   const [ttItems, setTtItems] = useState([])
   const [ttLoaded, setTtLoaded] = useState(false)
   const [ttBusy, setTtBusy] = useState(() => new Set()) // handle đang kiểm tra ('__new__' = đang thêm kênh mới)
@@ -503,39 +505,81 @@ export default function App() {
     setTtProgress({ label: 'Xong', done: total, total, current: '' })
     setTimeout(() => setTtProgress(p => (p && p.label === 'Xong' ? null : p)), 1800)
   }
-  // Thêm 1 hoặc nhiều kênh (mỗi dòng / cách nhau bởi khoảng trắng, phẩy) — chạy lần lượt, có thanh tiến trình.
-  // Không tốn token AI nên dán nhiều không sao (khác tab Tìm kiếm clip).
-  const addTikTok = async () => {
-    const { urls, invalid } = parseTikTokInputs(ttInput)
-    if (!urls.length) { alert('Không thấy link kênh TikTok hợp lệ — cần kiểu https://www.tiktok.com/@ten_kenh (hoặc @ten_kenh), mỗi link một dòng'); return }
-    const have = new Set(ttItems.map(x => x.handle))
-    const fresh = urls.filter(u => !have.has(tiktokHandle(u)))
-    const errs = invalid.map(s => ({ input: s, message: 'không phải link kênh TikTok' }))
-    const dup = urls.length - fresh.length
-    if (dup) errs.push({ input: dup + ' link', message: 'đã có trong danh sách theo dõi — bỏ qua' })
-    setTtAddErrors(errs)
-    if (!fresh.length) return
-    ttSetBusy('__new__', true)
-    try {
-      for (let i = 0; i < fresh.length; i++) {
-        const h = tiktokHandle(fresh[i])
-        setTtProgress({ label: 'Đang thêm', done: i, total: fresh.length, current: '@' + h })
-        const r = await checkTikTok(fresh[i], h)
-        if (!r.ok) { errs.push({ input: '@' + h, message: r.message }); setTtAddErrors([...errs]) }
-      }
-      ttProgressDone(fresh.length)
-    } finally {
-      ttSetBusy('__new__', false)
+  // ----- Ô nhập: mỗi link một dòng, validate từng dòng -----
+  const addTtRow = () => setTtRows(rs => [...rs, newTtRow()])
+  const removeTtRow = key => setTtRows(rs => (rs.length === 1 ? rs : rs.filter(r => r.key !== key)))
+  const updateTtRow = (key, url) => setTtRows(rs => rs.map(r => (r.key === key ? { ...r, url } : r)))
+  // Điền các link vào ô trống trước (từ ô `fromKey` nếu có), thiếu thì thêm ô mới. Tạo object mới, không mutate
+  // (StrictMode gọi updater 2 lần — mutate là bị double).
+  const fillTtRows = (urls, fromKey) => setTtRows(rs => {
+    const out = rs.map(r => ({ ...r }))
+    const start = fromKey ? Math.max(0, out.findIndex(r => r.key === fromKey)) : 0
+    let i = 0
+    for (let k = start; k < out.length && i < urls.length; k++) {
+      if (!out[k].url.trim() || out[k].key === fromKey) out[k].url = urls[i++]
     }
-    setTtInput('')
+    while (i < urls.length) out.push({ ...newTtRow(), url: urls[i++] })
+    return out
+  })
+  // Trạng thái từng dòng: empty | bad (không phải link kênh) | dup (trùng dòng trên) | tracked (đã theo dõi) | ok
+  const ttRowInfo = (row, idx) => {
+    const raw = row.url.trim()
+    if (!raw) return { state: 'empty' }
+    const url = normalizeTikTokInput(raw)
+    if (!isTikTokUrl(url)) return { state: 'bad' }
+    const handle = tiktokHandle(url)
+    const firstIdx = ttRows.findIndex(r => {
+      const u = normalizeTikTokInput(r.url.trim())
+      return r.url.trim() && isTikTokUrl(u) && tiktokHandle(u) === handle
+    })
+    if (firstIdx !== idx) return { state: 'dup', handle }
+    if (ttItems.some(x => x.handle === handle)) return { state: 'tracked', handle }
+    return { state: 'ok', handle, url: tiktokProfileUrl(handle) }
+  }
+  // Dán một đoạn nhiều link vào 1 ô -> tự tách ra từng ô
+  const onTtPaste = (e, key) => {
+    const text = e.clipboardData?.getData('text') || ''
+    const { urls } = parseTikTokInputs(text)
+    if (urls.length <= 1) return // dán 1 link thì để input xử lý bình thường
+    e.preventDefault()
+    fillTtRows(urls, key)
   }
   const pasteTikTok = async () => {
     try {
       const text = await navigator.clipboard.readText()
       const { urls } = parseTikTokInputs(text)
       if (!urls.length) { alert('Clipboard không có link kênh TikTok nào (dạng tiktok.com/@ten_kenh)'); return }
-      setTtInput(v => (v.trim() ? v.trim() + '\n' : '') + urls.join('\n'))
+      fillTtRows(urls)
     } catch { alert('Không đọc được clipboard') }
+  }
+  // Theo dõi các dòng hợp lệ (bỏ qua dòng sai/trùng/đã theo dõi — đã báo đỏ tại dòng) — chạy lần lượt,
+  // có thanh tiến trình. Dòng thành công được gỡ khỏi ô nhập, dòng lỗi giữ lại để sửa/thử lại.
+  const addTikTok = async () => {
+    const todo = ttRows.map((row, i) => ({ row, info: ttRowInfo(row, i) })).filter(x => x.info.state === 'ok')
+    if (!todo.length) { alert('Chưa có link kênh hợp lệ nào để theo dõi — dòng sai / trùng / đã theo dõi đều bị bỏ qua (xem báo đỏ ở từng dòng)'); return }
+    ttSetBusy('__new__', true)
+    const doneKeys = new Set()
+    const errs = []
+    try {
+      for (let i = 0; i < todo.length; i++) {
+        const { row, info } = todo[i]
+        setTtProgress({ label: 'Đang thêm', done: i, total: todo.length, current: '@' + info.handle })
+        const r = await checkTikTok(info.url, info.handle)
+        if (r.ok) doneKeys.add(row.key)
+        else { errs.push({ input: '@' + info.handle, message: r.message }); setTtAddErrors([...errs]) }
+      }
+      ttProgressDone(todo.length)
+    } finally {
+      ttSetBusy('__new__', false)
+    }
+    setTtAddErrors(errs)
+    setTtRows(rs => { const left = rs.filter(r => !doneKeys.has(r.key)); return left.length ? left : [newTtRow()] })
+  }
+  // Khóa lại tab (kiểm tra dialog / trước khi đưa máy cho người khác)
+  const ttLock = async () => {
+    if (!confirm('Khóa lại tab TikTok? Lần vào tab sau sẽ phải nhập mật khẩu.')) return
+    await fetch(`${API}/api/tiktok/lock`, { method: 'POST' }).catch(() => {})
+    setTtUnlocked(false)
   }
   // Cập nhật lần lượt (không song song để TikTok không nghi ngờ), có thanh tiến trình
   const refreshTikTok = async items => {
@@ -1372,15 +1416,38 @@ export default function App() {
 
       {mode === 'tiktok' && ttUnlocked === true && (
         <>
-        <div className="card">
-          <textarea className="set-input tt-textarea" rows={2}
-            placeholder="Link kênh TikTok — dán nhiều link cũng được, mỗi link một dòng (hoặc @ten_kenh)"
-            value={ttInput} onChange={e => setTtInput(e.target.value)} disabled={ttBusy.has('__new__')} />
-          <div className="actions" style={{ marginTop: 10 }}>
+        <div className={'card' + (ttBusy.has('__new__') ? ' locked' : '')}>
+          {ttBusy.has('__new__') && <div className="locked-note">⏳ Đang thêm kênh — chờ đọc xong nhé</div>}
+          <div className="rows">
+            {ttRows.map((r, i) => {
+              const info = ttRowInfo(r, i)
+              const invalid = info.state === 'bad' || info.state === 'dup' || info.state === 'tracked'
+              return (
+                <div className="row-wrap" key={r.key}>
+                  <div className="row">
+                    <span className="row-num">{i + 1}</span>
+                    <input className={'url' + (invalid ? ' invalid' : '')}
+                      placeholder="Link kênh TikTok: https://www.tiktok.com/@ten_kenh (hoặc @ten_kenh)"
+                      value={r.url} disabled={ttBusy.has('__new__')}
+                      onChange={e => updateTtRow(r.key, e.target.value)}
+                      onPaste={e => onTtPaste(e, r.key)}
+                      onKeyDown={e => { if (e.key === 'Enter' && !ttBusy.has('__new__')) addTikTok() }} />
+                    <button className="btn-icon" title="Xóa dòng" disabled={ttRows.length === 1 || ttBusy.has('__new__')} onClick={() => removeTtRow(r.key)}>✕</button>
+                  </div>
+                  {info.state === 'bad' && <div className="row-error">⚠ Không phải link kênh TikTok — cần dạng tiktok.com/@ten_kenh (link video không tính)</div>}
+                  {info.state === 'dup' && <div className="row-error">⚠ Trùng link ở dòng trên (@{info.handle})</div>}
+                  {info.state === 'tracked' && <div className="row-error">⚠ Kênh @{info.handle} đã được theo dõi — kết quả ở bên dưới, bấm Cập nhật ở đó nếu cần số mới</div>}
+                </div>
+              )
+            })}
+          </div>
+          <div className="actions">
+            <button onClick={addTtRow} disabled={ttBusy.has('__new__')}>＋ Thêm link</button>
             <button onClick={pasteTikTok} disabled={ttBusy.has('__new__')}>📋 Dán nhiều link</button>
             {ttItems.length > 0 && <button onClick={() => refreshTikTok(ttItems)} disabled={ttBusy.size > 0}>🔄 Cập nhật tất cả ({ttItems.length})</button>}
-            <button className="primary" onClick={addTikTok} disabled={ttBusy.has('__new__') || !ttInput.trim()}>
-              {ttBusy.has('__new__') ? '⏳ Đang thêm...' : '➕ Theo dõi'}
+            <button onClick={ttLock} disabled={ttBusy.size > 0} title="Khóa lại tab — lần vào sau sẽ hỏi mật khẩu">🔒 Khóa lại</button>
+            <button className="primary" onClick={addTikTok} disabled={ttBusy.has('__new__') || ttRows.every((r, i) => ttRowInfo(r, i).state !== 'ok')}>
+              {ttBusy.has('__new__') ? '⏳ Đang thêm...' : '➕ Theo dõi (' + ttRows.filter((r, i) => ttRowInfo(r, i).state === 'ok').length + ')'}
             </button>
           </div>
           {ttProgress && (
