@@ -78,6 +78,7 @@ export default function App() {
   const [searchKeyword, setSearchKeyword] = useState('')
   const [searchResults, setSearchResults] = useState({})
   const [searching, setSearching] = useState(false)
+  const [appBlock, setAppBlock] = useState(null) // {block, title, message} khi bị khóa từ xa
   // Theo dõi TikTok: danh sách kênh + lịch sử lưu ở server (config), giao diện chỉ hiển thị
   const [ttRows, setTtRows] = useState(() => [newTtRow()]) // mỗi link một ô để validate từng dòng
   const [ttItems, setTtItems] = useState([])
@@ -87,6 +88,7 @@ export default function App() {
   const [ttHistOpen, setTtHistOpen] = useState(() => new Set())
   const [ttUnlocked, setTtUnlocked] = useState(null) // null = chưa hỏi server; false = đang khóa; true = đã mở
   const [ttPass, setTtPass] = useState('')
+  const [ttPassShow, setTtPassShow] = useState(false)
   const [ttPassErr, setTtPassErr] = useState('')
   const [ttProgress, setTtProgress] = useState(null) // { label, done, total, current }
   const [ttAddErrors, setTtAddErrors] = useState([]) // lỗi khi thêm hàng loạt: [{ input, message }]
@@ -94,12 +96,17 @@ export default function App() {
 
   const refresh = async () => {
     const d = await fetch(`${API}/api/jobs`).then(r => r.json())
+    // Response chặn (killswitch 403) hoặc lỗi không có mảng jobs -> đừng ghi đè thành undefined
+    // (jobs.some() sẽ nổ và làm trắng cả app trước khi màn khóa kịp hiện).
+    if (!Array.isArray(d.jobs)) return d
     setJobs(d.jobs)
     setPaused(!!d.paused)
     return d
   }
 
   useEffect(() => {
+    // Khóa từ xa: đọc trạng thái trước tiên. block=true -> app khóa toàn bộ, chỉ hiện thông báo.
+    fetch(`${API}/api/app-control`).then(r => r.json()).then(d => { if (d.block) setAppBlock(d) }).catch(() => {})
     fetch(`${API}/api/defaults`)
       .then(r => r.json())
       .then(d => {
@@ -849,6 +856,21 @@ export default function App() {
     window.location.reload()
   }
 
+  // Khóa từ xa: chặn toàn bộ giao diện, chỉ hiện thông báo (không tab, không chức năng nào)
+  if (appBlock?.block) {
+    return (
+      <div className="app">
+        <div className="overlay">
+          <div className="overlay-card">
+            <div className="overlay-emoji">🔒</div>
+            <h3>{appBlock.title || 'Công cụ tạm ngừng sử dụng'}</h3>
+            <p>{appBlock.message || 'Công cụ đang tạm ngừng. Vui lòng liên hệ quản trị.'}</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="app">
       <header className="hero">
@@ -1402,9 +1424,13 @@ export default function App() {
             <div className="overlay-emoji">🔒</div>
             <h3>Tính năng giới hạn</h3>
             <p>Nhập mật khẩu để dùng tab Theo dõi TikTok. Chỉ cần nhập một lần trên máy này.</p>
-            <input className="set-input tt-pass" type="password" placeholder="Mật khẩu" autoFocus
-              value={ttPass} onChange={e => setTtPass(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') ttUnlock() }} />
+            <div className="tt-pass-wrap">
+              <input className="set-input tt-pass" type={ttPassShow ? 'text' : 'password'} placeholder="Mật khẩu" autoFocus
+                value={ttPass} onChange={e => setTtPass(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') ttUnlock() }} />
+              <button type="button" className="tt-pass-eye" title={ttPassShow ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                onClick={() => setTtPassShow(v => !v)}>{ttPassShow ? '🙈' : '👁️'}</button>
+            </div>
             {ttPassErr && <div className="row-error">⚠ {ttPassErr}</div>}
             <div className="actions tt-pass-actions">
               <button onClick={() => { setTtPassErr(''); setTtPass(''); setMode('analyze') }}>← Quay lại</button>

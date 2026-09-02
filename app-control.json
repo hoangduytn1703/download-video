@@ -1,0 +1,9 @@
+{
+  "_huong_dan_1": "File dieu khien app tu xa. App doc file nay moi lan mo (va moi 3 phut). Sua xong bam Commit tren GitHub la an sau vai phut, team KHONG can update app.",
+  "_huong_dan_2": "block = true  -> KHOA app cho ca team: mo len chi hien thong bao, khong dung duoc chuc nang nao. block = false -> binh thuong.",
+  "_huong_dan_3": "title / message: tieu de va noi dung hien khi khoa. Doi tuy y.",
+  "_huong_dan_4": "Neu may mat mang / doc file that bai -> app VAN chay binh thuong (khong tu khoa nham).",
+  "block": false,
+  "title": "Công cụ tạm ngừng sử dụng",
+  "message": "Công cụ đang tạm ngừng. Vui lòng liên hệ quản trị để biết thêm chi tiết."
+}

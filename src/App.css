@@ -745,7 +745,10 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-
 .tt-progress { margin-top: 12px; }
 .tt-progress .bar-fill { transition: width 0.35s ease; }
 .tt-progress-txt { font-size: 12.5px; color: #a9adc4; margin-top: 5px; }
-.tt-pass { width: 100%; box-sizing: border-box; margin-top: 14px; text-align: center; letter-spacing: 2px; }
+.tt-pass-wrap { position: relative; margin-top: 14px; }
+.tt-pass { width: 100%; box-sizing: border-box; margin: 0; text-align: center; letter-spacing: 2px; padding-right: 42px; }
+.tt-pass-eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; padding: 4px 6px; cursor: pointer; font-size: 16px; line-height: 1; }
+.tt-pass-eye:hover { background: rgba(255,255,255,0.08); }
 .tt-pass-actions { justify-content: center; margin-top: 14px; }
 .tt-pass-actions .primary { margin-left: 0; margin-top: 0; }
 @media (max-width: 720px) { .tt-card { grid-template-columns: 44px 1fr; } .tt-tools { grid-column: 1 / -1; justify-content: flex-start; } }

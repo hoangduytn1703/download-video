@@ -51,6 +51,38 @@ app.use((req, res, next) => {
   next()
 })
 
+// ===== Khóa từ xa (killswitch) =====
+// Team không cần update: mỗi lần mở app đọc 1 file điều khiển trên GitHub. block=true -> app
+// khóa TOÀN BỘ (mọi API trừ đọc trạng thái khóa + health), giao diện chỉ hiện thông báo.
+// Sửa file trên GitHub (Commit) là ăn sau vài phút. FAIL-OPEN: đọc lỗi/mất mạng -> KHÔNG khóa
+// (tránh mạng trục trặc làm cả team dùng không được). Người sửa được file = người kiểm soát.
+const APP_CONTROL_URL = process.env.APP_CONTROL_URL
+  || 'https://raw.githubusercontent.com/hoangduytn1703/download-video/master/app-control.json'
+let appControl = { block: false, title: '', message: '' }
+async function refreshAppControl() {
+  try {
+    const r = await fetch(APP_CONTROL_URL + '?t=' + Date.now(), { headers: { 'Cache-Control': 'no-cache' } })
+    if (!r.ok) return
+    const d = await r.json()
+    appControl = { block: d.block === true, title: String(d.title || ''), message: String(d.message || '') }
+  } catch {
+    // giữ giá trị đọc được lần trước (last-good); lần đầu mà lỗi thì mặc định không khóa
+  }
+}
+refreshAppControl()
+const appControlTimer = setInterval(refreshAppControl, 3 * 60 * 1000)
+if (appControlTimer.unref) appControlTimer.unref()
+
+app.get('/api/app-control', (req, res) => {
+  res.json({ ok: true, block: appControl.block, title: appControl.title, message: appControl.message })
+})
+app.use((req, res, next) => {
+  if (!appControl.block) return next()
+  if (!req.path.startsWith('/api/')) return next() // vẫn phục vụ file tĩnh để trang mở được
+  if (req.path === '/api/app-control' || req.path === '/api/health') return next()
+  res.status(403).json({ ok: false, blocked: true, message: appControl.message || 'Công cụ đang tạm ngừng sử dụng.' })
+})
+
 function resolveCommand(name) {
   const fromEnv = process.env[`${name.replace(/-/g, '_').toUpperCase()}_PATH`]
   if (fromEnv && fs.existsSync(fromEnv)) return fromEnv
