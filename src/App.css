@@ -715,5 +715,34 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-
 /* Tiêu chí + title tìm kiếm */
 .search-title-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .search-title-row .search-kw { flex: 1; min-width: 200px; margin: 0; }
+/* Tab theo dõi TikTok */
+.tt-input-row { display: flex; gap: 10px; align-items: center; }
+.tt-input-row .set-input { flex: 1; margin: 0; }
+.tt-card { display: grid; grid-template-columns: 44px 1fr auto; gap: 12px; align-items: center; }
+.tt-avatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; background: rgba(255,255,255,0.08); }
+.tt-avatar.ph { display: flex; align-items: center; justify-content: center; font-size: 20px; }
+.tt-name { font-weight: 700; }
+.tt-name a { color: inherit; text-decoration: none; }
+.tt-name a:hover { text-decoration: underline; }
+.tt-handle { color: #a9adc4; font-size: 12.5px; margin-left: 6px; font-weight: 400; }
+.tt-stats { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 4px; font-size: 13px; color: #a9adc4; }
+.tt-stats b { color: #f1f2f8; font-size: 15px; }
+.tt-follow { font-size: 22px !important; font-weight: 800; letter-spacing: -0.3px; }
+.tt-delta { font-weight: 700; padding: 2px 8px; border-radius: 999px; font-size: 13px; margin-left: 6px; }
+.tt-delta.up { background: rgba(34,197,94,0.15); color: #4ade80; }
+.tt-delta.down { background: rgba(244,63,94,0.15); color: #fb7185; }
+.tt-delta.flat { background: rgba(255,255,255,0.08); color: #a9adc4; }
+.tt-meta { color: #6f7490; font-size: 12px; margin-top: 4px; }
+.tt-tools { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.tt-hist { margin-top: 10px; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 8px; }
+.tt-hist table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.tt-hist th, .tt-hist td { text-align: right; padding: 4px 8px; color: #a9adc4; }
+.tt-hist th:first-child, .tt-hist td:first-child { text-align: left; }
+.tt-hist th { color: #6f7490; font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.tt-hist td.up { color: #4ade80; }
+.tt-hist td.down { color: #fb7185; }
+.tt-empty { color: #a9adc4; text-align: center; padding: 26px 10px; }
+@media (max-width: 720px) { .tt-card { grid-template-columns: 44px 1fr; } .tt-tools { grid-column: 1 / -1; justify-content: flex-start; } }
+
 /* Logo app trên header */
 .logo-img { width: 46px; height: 46px; display: block; border-radius: 50%; box-shadow: 0 8px 24px rgba(124, 58, 237, 0.35); }

@@ -10,6 +10,7 @@ import { fetchTranscript } from './transcript.js'
 import { segCountBlock } from '../src/parse.js'
 import { searchChannel, isChannelUrl } from './channel-search.js'
 import { loadCookie, saveCookie, clearCookie, parseCookieInput, checkLogin, probeAsk, analyzeViaCookieAsk, NO_COOKIE_MESSAGE, debugDirPath } from './youtube-cookie.js'
+import { isTikTokUrl, tiktokHandle, tiktokProfileUrl, fetchTikTokStats, appendSnapshot, summarizeHistory } from './tiktok.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT) || 3001
@@ -507,6 +508,69 @@ app.post('/api/save-text', (req, res) => {
     return res.status(422).json({ ok: false, message: 'Lỗi ghi file: ' + e.message })
   }
   res.json({ ok: true, saved: file, folder })
+})
+
+// ===== Theo dõi follow kênh TikTok =====
+// Lưu bền trong config (khác "Lưu link": mục đích là mở app hôm sau so sánh với hôm trước).
+function tiktokTrackedList(cfg) {
+  return Array.isArray(cfg.tiktokTracked) ? cfg.tiktokTracked : []
+}
+function tiktokItemView(item) {
+  const s = summarizeHistory(item.history)
+  return {
+    handle: item.handle,
+    url: item.url || tiktokProfileUrl(item.handle),
+    nickname: item.nickname || item.handle,
+    avatar: item.avatar || '',
+    verified: Boolean(item.verified),
+    addedAt: item.addedAt || null,
+    ...s,
+    history: (item.history || []).slice(-60),
+  }
+}
+
+app.get('/api/tiktok/tracked', (req, res) => {
+  const list = tiktokTrackedList(loadConfig())
+  res.json({ ok: true, items: list.map(tiktokItemView) })
+})
+
+// Kiểm tra 1 kênh: lấy số liệu hiện tại, ghi mốc hôm nay, trả về kèm chênh lệch so với mốc ngày trước.
+// Kênh chưa theo dõi thì thêm vào danh sách luôn (bấm "Theo dõi").
+app.post('/api/tiktok/check', async (req, res) => {
+  const raw = String(req.body?.url || '').trim()
+  const url = /^https?:\/\//i.test(raw) ? raw : (raw.startsWith('@') || /^[\w.\-]+$/.test(raw) ? tiktokProfileUrl(raw) : raw)
+  if (!isTikTokUrl(url)) return res.status(400).json({ ok: false, message: 'Link không đúng dạng kênh TikTok (cần tiktok.com/@ten_kenh)' })
+  const handle = tiktokHandle(url)
+  let stats
+  try {
+    stats = await fetchTikTokStats(tiktokProfileUrl(handle))
+  } catch (e) {
+    return res.status(502).json({ ok: false, message: e?.message || String(e) })
+  }
+  const cfg = loadConfig()
+  const list = tiktokTrackedList(cfg).map(x => ({ ...x }))
+  // TikTok có thể trả handle chuẩn khác chữ hoa/thường người dùng gõ — khóa theo handle TikTok trả
+  const key = stats.handle || handle
+  let item = list.find(x => x.handle === key) || list.find(x => x.handle === handle)
+  if (!item) {
+    item = { handle: key, url: tiktokProfileUrl(key), addedAt: Date.now(), history: [] }
+    list.push(item)
+  }
+  item.handle = key
+  item.url = tiktokProfileUrl(key)
+  item.nickname = stats.nickname
+  item.avatar = stats.avatar
+  item.verified = stats.verified
+  item.history = appendSnapshot(item.history, stats)
+  saveConfig({ tiktokTracked: list })
+  res.json({ ok: true, via: stats.via, item: tiktokItemView(item) })
+})
+
+app.post('/api/tiktok/remove', (req, res) => {
+  const handle = String(req.body?.handle || '').toLowerCase().replace(/^@/, '')
+  const list = tiktokTrackedList(loadConfig()).filter(x => x.handle !== handle)
+  saveConfig({ tiktokTracked: list })
+  res.json({ ok: true, items: list.map(tiktokItemView) })
 })
 
 // ===== Cắt clip theo phân tích AI (Gemini) =====

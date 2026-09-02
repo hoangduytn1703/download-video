@@ -66,6 +66,42 @@ async function startBackend() {
     else shell.openPath(folder)
   }
 
+  // Tải một trang web bằng cửa sổ ẩn rồi trả HTML sau khi JS chạy xong (dùng cho TikTok:
+  // fetch() thuần bị tường lửa chặn, chỉ Chromium thật mới qua). Dùng chính Chromium của app —
+  // không tốn thêm dung lượng. Session riêng để cookie TikTok không lẫn với cửa sổ chính.
+  global.__electronFetchPage = (url, { timeoutMs = 30000, settleMs = 1500 } = {}) => new Promise((resolve, reject) => {
+    const win = new BrowserWindow({
+      show: false,
+      width: 1280,
+      height: 900,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, partition: 'persist:tiktok' },
+    })
+    let finished = false
+    const done = (err, html) => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      try { win.destroy() } catch {}
+      err ? reject(err) : resolve(html)
+    }
+    const timer = setTimeout(() => done(new Error('Trang không tải xong sau ' + Math.round(timeoutMs / 1000) + 's')), timeoutMs)
+    // Bỏ dấu vết Electron/tên app trong User-Agent — trông như Chrome thường
+    const ua = win.webContents.getUserAgent().replace(/\s\S+\/[\d.]+\s(?=Chrome\/)/, ' ').replace(/\sElectron\/[\d.]+/, '')
+    win.webContents.setUserAgent(ua)
+    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    win.webContents.on('did-fail-load', (_e, code, desc) => { if (code !== -3) done(new Error(desc || ('Lỗi tải trang ' + code))) })
+    win.webContents.on('did-finish-load', async () => {
+      try {
+        await new Promise(r => setTimeout(r, settleMs)) // chờ trang hydrate xong
+        const html = await win.webContents.executeJavaScript('document.documentElement.outerHTML', true)
+        done(null, String(html || ''))
+      } catch (e) {
+        done(e)
+      }
+    })
+    win.loadURL(url).catch(e => done(e))
+  })
+
   setupAutoUpdate()
 
   await import(pathToFileURL(path.join(projectRoot, 'server', 'index.js')).href)

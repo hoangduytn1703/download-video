@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { getApiBase, runtime } from './api.js'
 import { isYouTubeUrl, parseVideoId, isChannelUrl } from './youtube.js'
+import { isTikTokUrl, tiktokHandle, normalizeTikTokInput } from './tiktok-url.js'
 import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText, segmentsToJson } from './parse.js'
 
 export { isYouTubeUrl }
@@ -75,6 +76,13 @@ export default function App() {
   const [searchKeyword, setSearchKeyword] = useState('')
   const [searchResults, setSearchResults] = useState({})
   const [searching, setSearching] = useState(false)
+  // Theo dõi TikTok: danh sách kênh + lịch sử lưu ở server (config), giao diện chỉ hiển thị
+  const [ttInput, setTtInput] = useState('')
+  const [ttItems, setTtItems] = useState([])
+  const [ttLoaded, setTtLoaded] = useState(false)
+  const [ttBusy, setTtBusy] = useState(() => new Set()) // handle đang kiểm tra ('__new__' = đang thêm kênh mới)
+  const [ttErrors, setTtErrors] = useState({}) // handle -> lỗi lần kiểm tra gần nhất
+  const [ttHistOpen, setTtHistOpen] = useState(() => new Set())
   const pollRef = useRef(null)
 
   const refresh = async () => {
@@ -445,6 +453,95 @@ export default function App() {
     else alert('Lỗi lưu file: ' + res.message)
   }
 
+  // ===== Theo dõi follow kênh TikTok =====
+  const ttToday = () => {
+    const d = new Date()
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
+  }
+  const ttSetBusy = (handle, on) => setTtBusy(s => { const n = new Set(s); on ? n.add(handle) : n.delete(handle); return n })
+  const ttUpsert = item => setTtItems(list => {
+    const i = list.findIndex(x => x.handle === item.handle)
+    if (i < 0) return [...list, item]
+    const out = [...list]; out[i] = item; return out
+  })
+  const loadTikTok = async () => {
+    try {
+      const d = await fetch(`${API}/api/tiktok/tracked`).then(r => r.json())
+      if (d.ok) setTtItems(d.items || [])
+      return d.items || []
+    } catch { return [] } finally { setTtLoaded(true) }
+  }
+  // Kiểm tra 1 kênh (thêm mới hoặc cập nhật). Trả true nếu thành công.
+  const checkTikTok = async (urlOrHandle, busyKey) => {
+    const url = normalizeTikTokInput(urlOrHandle)
+    const key = busyKey || tiktokHandle(url) || '__new__'
+    ttSetBusy(key, true)
+    setTtErrors(e => { const n = { ...e }; delete n[key]; return n })
+    try {
+      const res = await fetch(`${API}/api/tiktok/check`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!d.ok) throw new Error(d.message || ('HTTP ' + res.status))
+      ttUpsert(d.item)
+      return true
+    } catch (e) {
+      setTtErrors(er => ({ ...er, [key]: e?.message || String(e) }))
+      return false
+    } finally {
+      ttSetBusy(key, false)
+    }
+  }
+  const addTikTok = async () => {
+    const url = normalizeTikTokInput(ttInput)
+    if (!isTikTokUrl(url)) { alert('Link không đúng dạng kênh TikTok — cần kiểu https://www.tiktok.com/@ten_kenh (hoặc gõ @ten_kenh)'); return }
+    const handle = tiktokHandle(url)
+    if (ttItems.some(x => x.handle === handle)) { alert('Kênh @' + handle + ' đã có trong danh sách theo dõi — bấm Cập nhật ở dòng đó nhé.'); return }
+    const ok = await checkTikTok(url, '__new__')
+    if (ok) setTtInput('')
+  }
+  // Cập nhật lần lượt (không song song để TikTok không nghi ngờ)
+  const refreshTikTok = async items => {
+    for (const it of items) await checkTikTok(it.url, it.handle)
+  }
+  const removeTikTok = async item => {
+    if (!confirm('Bỏ theo dõi @' + item.handle + '? Lịch sử follow đã lưu của kênh này sẽ bị xóa.')) return
+    const d = await fetch(`${API}/api/tiktok/remove`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ handle: item.handle }),
+    }).then(r => r.json()).catch(() => ({}))
+    if (d.ok) setTtItems(d.items || [])
+  }
+  const toggleTtHist = handle => setTtHistOpen(s => { const n = new Set(s); n.has(handle) ? n.delete(handle) : n.add(handle); return n })
+  const fmtNum = n => (n == null ? '—' : Number(n).toLocaleString('vi'))
+  const fmtShort = n => {
+    if (n == null) return '—'
+    if (n >= 1e9) return (n / 1e9).toFixed(2).replace(/\.?0+$/, '') + 'B'
+    if (n >= 1e6) return (n / 1e6).toFixed(2).replace(/\.?0+$/, '') + 'M'
+    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.?0+$/, '') + 'K'
+    return String(n)
+  }
+  const fmtDelta = n => (n == null ? '' : n > 0 ? '+' + fmtNum(n) : n < 0 ? '−' + fmtNum(-n) : '0')
+  const deltaClass = n => (n == null || n === 0 ? 'flat' : n > 0 ? 'up' : 'down')
+  const fmtWhen = ts => {
+    if (!ts) return ''
+    const d = new Date(ts)
+    return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ' ' + pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1)
+  }
+  const fmtDay = day => (day ? day.slice(8, 10) + '/' + day.slice(5, 7) : '')
+
+  // Mở tab TikTok lần đầu trong phiên: nạp danh sách, rồi tự cập nhật những kênh chưa có mốc hôm nay
+  // (đúng nghĩa "hôm sau mở app lên là thấy tăng/giảm", không phải bấm từng cái).
+  useEffect(() => {
+    if (mode !== 'tiktok' || ttLoaded) return
+    let cancelled = false
+    loadTikTok().then(items => {
+      if (cancelled) return
+      const today = ttToday()
+      refreshTikTok(items.filter(it => it.latest?.day !== today))
+    })
+    return () => { cancelled = true }
+  }, [mode, ttLoaded]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const analyzeAll = async () => {
     if (!requireKey()) return
     const targets = rows.filter(r => isYouTubeUrl(r.url) && !dupKeys.has(r.key) && analysis[r.key]?.status !== 'analyzing')
@@ -656,12 +753,15 @@ export default function App() {
         <p className="hint">
           {mode === 'analyze'
             ? 'Dán link → Phân tích → nhận text kết quả cắt → Copy / Lưu .txt. Muốn cắt thì qua tab Cắt clip 📋'
-            : 'Link dùng chung với tab Phân tích. Chọn nguồn mốc cắt → bấm Phân tích để xem/sửa mốc, hoặc Cắt để chạy luôn ✂️'}
+            : mode === 'tiktok'
+              ? 'Dán link kênh TikTok → Theo dõi. Mỗi lần mở app bấm Cập nhật để xem follow tăng/giảm so với hôm trước 📈'
+              : 'Link dùng chung với tab Phân tích. Chọn nguồn mốc cắt → bấm Phân tích để xem/sửa mốc, hoặc Cắt để chạy luôn ✂️'}
         </p>
         <div className="mode-tabs">
           <button className={mode === 'search' ? 'active' : ''} onClick={() => setMode('search')}>🔎 Tìm kiếm clip</button>
           <button className={mode === 'analyze' ? 'active' : ''} onClick={() => setMode('analyze')}>🔍 Phân tích</button>
           <button className={mode === 'cut' ? 'active' : ''} onClick={() => setMode('cut')}>✂️ Cắt clip</button>
+          <button className={mode === 'tiktok' ? 'active' : ''} onClick={() => setMode('tiktok')}>📈 TikTok</button>
           <button className="btn-icon" title="Làm mới giao diện (app không có menu Reload sẵn)" onClick={requestReload}>🔄</button>
           <button className="btn-icon gear" title="Sửa prompt hỏi AI" onClick={() => setSettingsOpen(true)}>⚙️</button>
         </div>
@@ -743,7 +843,7 @@ export default function App() {
         />
       )}
 
-      {mode !== 'search' && (
+      {mode !== 'search' && mode !== 'tiktok' && (
       <div className={`card${hasRunning ? ' locked' : ''}`}>
         {hasRunning && (
           <div className="locked-note">
@@ -1192,6 +1292,110 @@ export default function App() {
       )}
 
       <UpdateBar />
+
+      {mode === 'tiktok' && (
+        <>
+        <div className="card">
+          <div className="tt-input-row">
+            <input className="set-input" placeholder="Link kênh TikTok: https://www.tiktok.com/@ten_kenh (hoặc gõ @ten_kenh)"
+              value={ttInput} onChange={e => setTtInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !ttBusy.has('__new__')) addTikTok() }}
+              disabled={ttBusy.has('__new__')} />
+            <button className="primary" onClick={addTikTok} disabled={ttBusy.has('__new__') || !ttInput.trim()}>
+              {ttBusy.has('__new__') ? '⏳ Đang đọc kênh...' : '➕ Theo dõi'}
+            </button>
+          </div>
+          {ttErrors.__new__ && <div className="row-error">⚠ {ttErrors.__new__}</div>}
+          {ttItems.length > 0 && (
+            <div className="actions" style={{ marginTop: 12 }}>
+              <span className="json-lbl">{ttItems.length} kênh đang theo dõi · mốc lưu theo ngày, so với mốc ngày trước</span>
+              <button style={{ marginLeft: 'auto' }} onClick={() => refreshTikTok(ttItems)} disabled={ttBusy.size > 0}>
+                {ttBusy.size > 0 ? '⏳ Đang cập nhật ' + ttBusy.size + '...' : '🔄 Cập nhật tất cả'}
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="search-res">
+          {ttLoaded && ttItems.length === 0 && (
+            <div className="sr-card tt-empty">Chưa theo dõi kênh nào. Dán link kênh TikTok ở trên rồi bấm <b>Theo dõi</b> — app sẽ lưu số follow hôm nay, hôm sau mở lại là thấy tăng/giảm.</div>
+          )}
+          {ttItems.map(it => {
+            const busy = ttBusy.has(it.handle)
+            const err = ttErrors[it.handle]
+            const L = it.latest
+            const stale = L && L.day !== ttToday()
+            const hist = [...(it.history || [])].reverse()
+            return (
+              <div className={'sr-card' + (err ? ' bad' : '')} key={it.handle}>
+                <div className="tt-card">
+                  {it.avatar ? <img className="tt-avatar" src={it.avatar} alt="" referrerPolicy="no-referrer" /> : <div className="tt-avatar ph">🎵</div>}
+                  <div>
+                    <div className="tt-name">
+                      <a href={it.url} target="_blank" rel="noreferrer">{it.nickname || it.handle}</a>
+                      {it.verified && <span title="Đã xác minh"> ✓</span>}
+                      <span className="tt-handle">@{it.handle}</span>
+                    </div>
+                    {L ? (
+                      <>
+                        <div className="tt-stats">
+                          <span><b className="tt-follow">{fmtNum(L.followers)}</b> follower
+                            {it.delta && (
+                              <span className={'tt-delta ' + deltaClass(it.delta.followers)} title={'So với mốc ' + fmtDay(it.previous?.day) + ' (' + fmtNum(it.previous?.followers) + ')'}>
+                                {fmtDelta(it.delta.followers)} {it.daysBetween === 1 ? 'so với hôm trước' : 'so với ' + it.daysBetween + ' ngày trước'}
+                              </span>
+                            )}
+                            {!it.delta && <span className="tt-delta flat">mốc đầu — mai so sánh</span>}
+                          </span>
+                          <span><b>{fmtNum(L.following)}</b> following</span>
+                          <span><b>{fmtShort(L.hearts)}</b> tim{it.delta && it.delta.hearts ? <span className={'tt-delta ' + deltaClass(it.delta.hearts)}>{fmtDelta(it.delta.hearts)}</span> : null}</span>
+                          <span><b>{fmtNum(L.videos)}</b> video{it.delta && it.delta.videos ? <span className={'tt-delta ' + deltaClass(it.delta.videos)}>{fmtDelta(it.delta.videos)}</span> : null}</span>
+                        </div>
+                        <div className="tt-meta">
+                          {busy ? '⏳ Đang đọc số liệu mới...' : ('Cập nhật lúc ' + fmtWhen(L.at) + (stale ? ' (chưa có mốc hôm nay)' : ''))}
+                          {it.first && it.deltaFromFirst != null && (' · từ ' + fmtDay(it.first.day) + ' (' + it.daysFromFirst + ' ngày): ' + fmtDelta(it.deltaFromFirst) + ' follower')}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="tt-meta">{busy ? '⏳ Đang đọc số liệu...' : 'Chưa có số liệu'}</div>
+                    )}
+                    {err && <div className="row-error">⚠ {err}</div>}
+                  </div>
+                  <div className="tt-tools">
+                    <button onClick={() => checkTikTok(it.url, it.handle)} disabled={busy}>{busy ? '⏳' : '🔄 Cập nhật'}</button>
+                    <button onClick={() => toggleTtHist(it.handle)} disabled={!hist.length}>{ttHistOpen.has(it.handle) ? '▲ Lịch sử' : '▼ Lịch sử (' + hist.length + ')'}</button>
+                    <button className="btn-icon" title="Bỏ theo dõi" onClick={() => removeTikTok(it)}>✕</button>
+                  </div>
+                </div>
+                {ttHistOpen.has(it.handle) && hist.length > 0 && (
+                  <div className="tt-hist">
+                    <table>
+                      <thead><tr><th>Ngày</th><th>Follower</th><th>+/− so ngày trước</th><th>Following</th><th>Tim</th><th>Video</th></tr></thead>
+                      <tbody>
+                        {hist.map((h, i) => {
+                          const prev = hist[i + 1]
+                          const d = prev ? h.followers - prev.followers : null
+                          return (
+                            <tr key={h.day}>
+                              <td>{fmtDay(h.day)} <span style={{ color: '#6f7490' }}>{fmtWhen(h.at).slice(0, 5)}</span></td>
+                              <td><b style={{ color: '#f1f2f8' }}>{fmtNum(h.followers)}</b></td>
+                              <td className={d == null ? '' : deltaClass(d)}>{d == null ? '—' : fmtDelta(d)}</td>
+                              <td>{fmtNum(h.following)}</td>
+                              <td>{fmtNum(h.hearts)}</td>
+                              <td>{fmtNum(h.videos)}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+        </>
+      )}
 
       <footer className="footer">© 2026 - code by Nguyễn Hoàng Duy</footer>
     </div>
