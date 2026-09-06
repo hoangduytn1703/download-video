@@ -1,6 +1,26 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText, segmentsToJson, segCountBlock } from './parse.js'
+import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText, segmentsToJson, segCountBlock, makeColorChoice } from './parse.js'
+
+test('makeColorChoice: default = (1,1,1); random = mỗi số 1..10', () => {
+  assert.deepEqual(makeColorChoice('default'), { fontChoice: '1', textColor: '1', bgColor: '1' })
+  assert.deepEqual(makeColorChoice(), { fontChoice: '1', textColor: '1', bgColor: '1' })
+  let sawTen = false
+  for (let i = 0; i < 500; i++) {
+    const c = makeColorChoice('random')
+    for (const v of [c.fontChoice, c.textColor, c.bgColor]) {
+      const n = Number(v)
+      assert.ok(Number.isInteger(n) && n >= 1 && n <= 10, 'random phải là số nguyên 1..10, gặp: ' + v)
+      if (n === 10) sawTen = true
+    }
+  }
+  assert.ok(sawTen, 'phải có lúc ra 10 (biên trên)')
+})
+
+test('segmentsToJson nhận bộ màu tùy chỉnh', () => {
+  const out = segmentsToJson('u', 'n', [{ start: 0, end: 1, title: 'x' }], { fontChoice: '3', textColor: '7', bgColor: '9' })
+  assert.deepEqual([out.font_choice, out.text_color, out.bg_color], ['3', '7', '9'])
+})
 
 test('đọc đúng chuỗi pipe thật của team (từ Gemini)', () => {
   const text =

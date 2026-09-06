@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { getApiBase, runtime } from './api.js'
 import { isYouTubeUrl, parseVideoId, isChannelUrl } from './youtube.js'
 import { isTikTokUrl, tiktokHandle, tiktokProfileUrl, normalizeTikTokInput, parseTikTokInputs } from './tiktok-url.js'
-import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText, segmentsToJson } from './parse.js'
+import { parseSegmentsText, buildPrompt, validatePrompt, DEFAULT_CUT_PROMPT, jobsToEnqueueAfterAnalyze, cutUiForSource, segmentsToPipeText, segmentsToJson, makeColorChoice } from './parse.js'
 
 export { isYouTubeUrl }
 
@@ -24,6 +24,8 @@ let chanKey = 1
 const newChan = () => ({ key: chanKey++, url: '' })
 let ttRowKey = 1
 const newTtRow = () => ({ key: 'tt' + ttRowKey++, url: '' })
+// Tạm ẩn tab Cắt clip theo yêu cầu (code vẫn giữ, đổi true để hiện lại)
+const SHOW_CUT_TAB = false
 const newRow = (folder = '') => ({ key: rowKey++, url: '', filename: '', folder, aiText: '', segCount: null })
 
 // giây -> "m:ss" / "h:mm:ss" để hiển thị trong ô sửa
@@ -70,6 +72,9 @@ export default function App() {
   const [savingJson, setSavingJson] = useState(false)
   // Tên file JSON cho từng kết quả — mặc định tự render, user sửa được (ghi đè)
   const [jsonNames, setJsonNames] = useState({})
+  // Màu JSON (font_choice/text_color/bg_color): 1 switch chung áp cho TẤT CẢ video khi xuất JSON.
+  // 'random' = mỗi số 1..10 ngẫu nhiên độc lập cho từng video; 'default' = cả 3 = "1".
+  const [colorMode, setColorMode] = useState('random')
   // Các dòng đang chạy "phân tích lại" riêng lẻ
   const [rerunKeys, setRerunKeys] = useState(() => new Set())
   // ===== Tìm kiếm clip từ channel =====
@@ -82,6 +87,10 @@ export default function App() {
   // Theo dõi TikTok: danh sách kênh + lịch sử lưu ở server (config), giao diện chỉ hiển thị
   const [ttRows, setTtRows] = useState(() => [newTtRow()]) // mỗi link một ô để validate từng dòng
   const [ttItems, setTtItems] = useState([])
+  const [ttDepts, setTtDepts] = useState([]) // cây phòng ban (từ server), mỗi node {id,name,parentId,depth,children}
+  const [ttAddDept, setTtAddDept] = useState('') // deptId sẽ gán khi thêm kênh mới (ô nhập)
+  const [ttDeptBusy, setTtDeptBusy] = useState(false)
+  const [ttCollapsed, setTtCollapsed] = useState(() => new Set()) // deptId (hoặc '__none__') đang thu gọn
   const [ttLoaded, setTtLoaded] = useState(false)
   const [ttBusy, setTtBusy] = useState(() => new Set()) // handle đang kiểm tra ('__new__' = đang thêm kênh mới)
   const [ttErrors, setTtErrors] = useState({}) // handle -> lỗi lần kiểm tra gần nhất
@@ -93,6 +102,7 @@ export default function App() {
   const [ttProgress, setTtProgress] = useState(null) // { label, done, total, current }
   const [ttAddErrors, setTtAddErrors] = useState([]) // lỗi khi thêm hàng loạt: [{ input, message }]
   const pollRef = useRef(null)
+  const ttPassRef = useRef(null)
 
   const refresh = async () => {
     const d = await fetch(`${API}/api/jobs`).then(r => r.json())
@@ -107,6 +117,9 @@ export default function App() {
   useEffect(() => {
     // Khóa từ xa: đọc trạng thái trước tiên. block=true -> app khóa toàn bộ, chỉ hiện thông báo.
     fetch(`${API}/api/app-control`).then(r => r.json()).then(d => { if (d.block) setAppBlock(d) }).catch(() => {})
+    // Biết trạng thái khóa tab TikTok ngay từ đầu -> bấm sang tab là modal (nếu khóa) hiện liền,
+    // không phải chờ fetch lúc mở tab. Lỗi/không rõ -> coi như khóa (an toàn, hiện ô nhập mật khẩu).
+    fetch(`${API}/api/tiktok/status`).then(r => r.json()).then(d => setTtUnlocked(Boolean(d.unlocked))).catch(() => setTtUnlocked(false))
     fetch(`${API}/api/defaults`)
       .then(r => r.json())
       .then(d => {
@@ -299,13 +312,16 @@ export default function App() {
     else alert('Lỗi lưu JSON: ' + res.message)
   }
 
+  // Bộ màu áp khi xuất JSON: random -> mỗi video 1 bộ 1..10 độc lập; default -> (1,1,1)
+  const colorForSave = () => makeColorChoice(colorMode)
+
   // Lưu riêng 1 kết quả — dùng tên đang hiển thị (đã sửa hoặc tự render)
   const saveOneJson = async r => {
     const ready = rows.filter(x => analysis[x.key]?.status === 'ready')
     const stt = ready.findIndex(x => x.key === r.key) + 1 || 1
     await doSaveJson([{
       filename: jsonNameFor(r.key, stt),
-      json: segmentsToJson(r.url, analysis[r.key].name, analysis[r.key].segments),
+      json: segmentsToJson(r.url, analysis[r.key].name, analysis[r.key].segments, colorForSave()),
     }])
   }
 
@@ -343,7 +359,7 @@ export default function App() {
     if (!ready.length) return
     const items = ready.map((r, i) => ({
       filename: jsonNameFor(r.key, i + 1),
-      json: segmentsToJson(r.url, analysis[r.key].name, analysis[r.key].segments),
+      json: segmentsToJson(r.url, analysis[r.key].name, analysis[r.key].segments, colorForSave()),
     }))
     setSavingJson(true)
     try {
@@ -481,19 +497,72 @@ export default function App() {
   const loadTikTok = async () => {
     try {
       const d = await fetch(`${API}/api/tiktok/tracked`).then(r => r.json())
-      if (d.ok) setTtItems(d.items || [])
+      if (d.ok) { setTtItems(d.items || []); setTtDepts(d.departments || []) }
       return d.items || []
     } catch { return [] } finally { setTtLoaded(true) }
   }
+
+  // ----- Phòng ban TikTok -----
+  const MAX_DEPT_DEPTH = 5
+  // Làm phẳng cây phòng ban thành danh sách [{id,name,depth}] để đổ vào <select> (thụt lề theo cấp)
+  const flatDepts = (nodes = ttDepts, out = []) => {
+    for (const n of nodes) { out.push({ id: n.id, name: n.name, depth: n.depth }); flatDepts(n.children || [], out) }
+    return out
+  }
+  const deptName = id => flatDepts().find(d => d.id === id)?.name || ''
+  const ttDeptApi = async (path, body) => {
+    setTtDeptBusy(true)
+    try {
+      const d = await fetch(`${API}/api/tiktok/${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
+      }).then(r => r.json())
+      if (!d.ok) { alert(d.message || 'Lỗi'); return null }
+      if (d.departments) setTtDepts(d.departments)
+      if (d.items) setTtItems(d.items)
+      return d
+    } catch (e) { alert('Lỗi mạng: ' + (e?.message || e)); return null }
+    finally { setTtDeptBusy(false) }
+  }
+  const createDept = async parentId => {
+    const label = parentId ? 'Tên phòng con:' : 'Tên cấp cao nhất (công ty):'
+    const name = prompt(label)
+    if (name == null || !name.trim()) return
+    await ttDeptApi('dept', { name: name.trim(), parentId: parentId || null })
+  }
+  const renameDeptUi = async d => {
+    const name = prompt('Đổi tên phòng ban:', d.name)
+    if (name == null || !name.trim() || name.trim() === d.name) return
+    await ttDeptApi('dept/rename', { id: d.id, name: name.trim() })
+  }
+  const removeDeptUi = async d => {
+    if (!confirm('Xóa phòng ban "' + d.name + '"?\nKênh trong phòng sẽ về "Chưa phân nhóm". (Phải xóa các phòng con trước.)')) return
+    await ttDeptApi('dept/remove', { id: d.id })
+  }
+  const assignChannel = async (handle, deptId) => {
+    await ttDeptApi('assign', { handle, deptId: deptId || null })
+  }
+  const toggleTtCollapse = id => setTtCollapsed(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+  // id của node + toàn bộ con cháu (để đếm kênh trong cả nhánh)
+  const subtreeIds = (node, out = []) => { out.push(node.id); for (const c of node.children || []) subtreeIds(c, out); return out }
+  const countInSubtree = node => { const ids = new Set(subtreeIds(node)); return ttItems.filter(it => ids.has(it.deptId)).length }
+  // Kênh "chưa phân nhóm" = không có deptId hoặc deptId trỏ tới phòng đã bị xóa
+  const ttUnassigned = () => ttItems.filter(it => !it.deptId || !deptName(it.deptId))
+  // Ngưỡng nổi bật (từ Cài đặt): tăng follow/ngày >= hot -> 🔥, tổng follow >= star -> ⭐.
+  // null = đã tắt (để trống trong Cài đặt); 0 là ngưỡng thật (>= 0 vẫn tính); chưa có settings -> mặc định.
+  const ttHotN = settings ? settings.tiktokHotDelta : 100
+  const ttStarN = settings ? settings.tiktokStarTotal : 100000
+  const ttIsHot = it => ttHotN != null && it.delta && Number(it.delta.followers) >= Number(ttHotN)
+  const ttIsStar = it => ttStarN != null && it.latest && Number(it.latest.followers) >= Number(ttStarN)
   // Kiểm tra 1 kênh (thêm mới hoặc cập nhật). Trả { ok } hoặc { ok:false, message }.
-  const checkTikTok = async (urlOrHandle, busyKey) => {
+  const checkTikTok = async (urlOrHandle, busyKey, deptId) => {
     const url = normalizeTikTokInput(urlOrHandle)
     const key = busyKey || tiktokHandle(url) || '__new__'
     ttSetBusy(key, true)
     setTtErrors(e => { const n = { ...e }; delete n[key]; return n })
     try {
       const res = await fetch(`${API}/api/tiktok/check`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(deptId ? { url, deptId } : { url }),
       })
       const d = await res.json().catch(() => ({}))
       if (d.locked) setTtUnlocked(false)
@@ -571,7 +640,7 @@ export default function App() {
       for (let i = 0; i < todo.length; i++) {
         const { row, info } = todo[i]
         setTtProgress({ label: 'Đang thêm', done: i, total: todo.length, current: '@' + info.handle })
-        const r = await checkTikTok(info.url, info.handle)
+        const r = await checkTikTok(info.url, info.handle, ttAddDept)
         if (r.ok) doneKeys.add(row.key)
         else { errs.push({ input: '@' + info.handle, message: r.message }); setTtAddErrors([...errs]) }
       }
@@ -651,6 +720,35 @@ export default function App() {
     })
     return () => { cancelled = true }
   }, [mode, ttUnlocked, ttLoaded]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Focus vào ô mật khẩu ngay khi modal hiện. autoFocus / một lần setTimeout không ăn chắc:
+  // lúc app vừa mở hoặc vừa chuyển focus, cửa sổ có thể CHƯA được hệ điều hành focus nên
+  // element.focus() trượt im lặng (đó là lúc "phải chờ vài giây, click mới nhập được").
+  // -> thử lại tới khi con trỏ thật sự vào ô (tối đa ~3s), và focus lại mỗi khi cửa sổ được focus.
+  useEffect(() => {
+    if (mode !== 'tiktok' || ttUnlocked !== false) return
+    // App desktop: nhờ Electron kéo cửa sổ lên & focus trước, nếu không input.focus() sẽ trượt
+    // khi cửa sổ chưa được OS focus (web thì endpoint này là no-op, vô hại).
+    fetch(`${API}/api/focus-window`, { method: 'POST' }).catch(() => {})
+    let tries = 0
+    let timer = 0
+    const focusNow = () => {
+      const el = ttPassRef.current
+      if (!el) return
+      el.focus({ preventScroll: true })
+      if (document.activeElement !== el && tries++ < 80) timer = setTimeout(focusNow, 100) // thử lại tới ~8s
+    }
+    const raf = requestAnimationFrame(focusNow) // chờ overlay vẽ xong 1 khung hình rồi mới focus
+    // Cửa sổ được focus lại / tab hiện lại -> focus vào ô ngay (app mới mở mà OS chưa focus cửa sổ)
+    const onWake = () => ttPassRef.current?.focus({ preventScroll: true })
+    window.addEventListener('focus', onWake)
+    document.addEventListener('visibilitychange', onWake)
+    return () => {
+      cancelAnimationFrame(raf); clearTimeout(timer)
+      window.removeEventListener('focus', onWake)
+      document.removeEventListener('visibilitychange', onWake)
+    }
+  }, [mode, ttUnlocked])
 
   const analyzeAll = async () => {
     if (!requireKey()) return
@@ -856,6 +954,99 @@ export default function App() {
     window.location.reload()
   }
 
+  // Thẻ 1 kênh TikTok — dùng chung cho kênh nằm trong phòng ban và mục "Chưa phân nhóm".
+  // Nổi bật: viền radiant + 🔥 khi tăng follow/ngày >= ngưỡng, + ⭐ khi tổng follow >= ngưỡng.
+  const renderTtCard = it => {
+    const busy = ttBusy.has(it.handle)
+    const err = ttErrors[it.handle]
+    const L = it.latest
+    const stale = L && L.day !== ttToday()
+    const hist = [...(it.history || [])].reverse()
+    const hot = ttIsHot(it)
+    const star = ttIsStar(it)
+    return (
+      <div className={'sr-card' + (err ? ' bad' : '') + (hot ? ' hot' : '') + (star ? ' star' : '')} key={it.handle}>
+        {(hot || star) && (
+          <div className="tt-badges">
+            {hot && <span className="tt-badge fire" title={'Tăng ' + fmtDelta(it.delta.followers) + ' follower trong ngày (≥ ' + fmtNum(ttHotN) + ') — hôm nay kênh chạy tốt!'}>🔥</span>}
+            {star && <span className="tt-badge" title={'Tổng ' + fmtNum(L.followers) + ' follower (≥ ' + fmtNum(ttStarN) + ')'}>⭐</span>}
+          </div>
+        )}
+        <div className="tt-card">
+          {it.avatar ? <img className="tt-avatar" src={it.avatar} alt="" referrerPolicy="no-referrer" /> : <div className="tt-avatar ph">🎵</div>}
+          <div>
+            <div className="tt-name">
+              <a href={it.url} target="_blank" rel="noreferrer">{it.nickname || it.handle}</a>
+              {it.verified && <span title="Đã xác minh"> ✓</span>}
+              <span className="tt-handle">@{it.handle}</span>
+            </div>
+            {L ? (
+              <>
+                <div className="tt-stats">
+                  <span><b className="tt-follow">{fmtNum(L.followers)}</b> follower
+                    {it.delta && (
+                      <span className={'tt-delta ' + deltaClass(it.delta.followers)} title={'So với mốc ' + fmtDay(it.previous?.day) + ' (' + fmtNum(it.previous?.followers) + ')'}>
+                        {fmtDelta(it.delta.followers)} {it.daysBetween === 1 ? 'so với hôm trước' : 'so với ' + it.daysBetween + ' ngày trước'}
+                      </span>
+                    )}
+                    {!it.delta && <span className="tt-delta flat">mốc đầu — mai so sánh</span>}
+                  </span>
+                  <span><b>{fmtNum(L.following)}</b> following</span>
+                  <span><b>{fmtShort(L.hearts)}</b> tim{it.delta && it.delta.hearts ? <span className={'tt-delta ' + deltaClass(it.delta.hearts)}>{fmtDelta(it.delta.hearts)}</span> : null}</span>
+                  <span><b>{fmtNum(L.videos)}</b> video{it.delta && it.delta.videos ? <span className={'tt-delta ' + deltaClass(it.delta.videos)}>{fmtDelta(it.delta.videos)}</span> : null}</span>
+                </div>
+                <div className="tt-meta">
+                  {busy ? '⏳ Đang đọc số liệu mới...' : ('Cập nhật lúc ' + fmtWhen(L.at) + (stale ? ' (chưa có mốc hôm nay)' : ''))}
+                  {it.first && it.deltaFromFirst != null && (' · từ ' + fmtDay(it.first.day) + ' (' + it.daysFromFirst + ' ngày): ' + fmtDelta(it.deltaFromFirst) + ' follower')}
+                </div>
+              </>
+            ) : (
+              <div className="tt-meta">{busy ? '⏳ Đang đọc số liệu...' : 'Chưa có số liệu'}</div>
+            )}
+            {err && <div className="row-error">⚠ {err}</div>}
+          </div>
+          <div className="tt-tools">
+            {flatDepts().length > 0 && (
+              <select className="tt-dept-select" title="Phòng ban của kênh này (chuyển được)" value={it.deptId || ''}
+                onChange={e => assignChannel(it.handle, e.target.value)} disabled={ttDeptBusy}>
+                <option value="">— Chưa phân nhóm —</option>
+                {flatDepts().map(d => <option key={d.id} value={d.id}>{' '.repeat((d.depth - 1) * 2) + d.name}</option>)}
+              </select>
+            )}
+            <button onClick={() => checkTikTok(it.url, it.handle)} disabled={busy}>{busy ? '⏳' : '🔄 Cập nhật'}</button>
+            <button onClick={() => toggleTtHist(it.handle)} disabled={!hist.length}>{ttHistOpen.has(it.handle) ? '▲ Lịch sử' : '▼ Lịch sử (' + hist.length + ')'}</button>
+            <button className="btn-icon" title="Bỏ theo dõi" onClick={() => removeTikTok(it)}>✕</button>
+          </div>
+        </div>
+        {ttHistOpen.has(it.handle) && hist.length > 0 && (
+          <div className="tt-hist">
+            <table>
+              <thead><tr><th>Ngày</th><th>Follower</th><th>+/− so ngày trước</th><th>Following</th><th>Tim</th><th>Video</th></tr></thead>
+              <tbody>
+                {hist.map((h, i) => {
+                  const prev = hist[i + 1]
+                  const d = prev ? h.followers - prev.followers : null
+                  // Ngày tăng >= ngưỡng 🔥 -> cả dòng nổi bật (viền radiant, bold, 🔥) — đúng ngày kênh chạy tốt
+                  const rowHot = ttHotN != null && d != null && d >= Number(ttHotN)
+                  return (
+                    <tr key={h.day} className={rowHot ? 'hot' : ''} title={rowHot ? 'Ngày này tăng ' + fmtDelta(d) + ' follower (≥ ' + fmtNum(ttHotN) + ')' : undefined}>
+                      <td>{fmtDay(h.day)} <span style={{ color: '#6f7490' }}>{fmtWhen(h.at).slice(0, 5)}</span></td>
+                      <td><b style={{ color: '#f1f2f8' }}>{fmtNum(h.followers)}</b></td>
+                      <td className={d == null ? '' : deltaClass(d)}>{d == null ? '—' : fmtDelta(d)}{rowHot && <span className="tt-row-fire" aria-hidden="true"> 🔥</span>}</td>
+                      <td>{fmtNum(h.following)}</td>
+                      <td>{fmtNum(h.hearts)}</td>
+                      <td>{fmtNum(h.videos)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   // Khóa từ xa: chặn toàn bộ giao diện, chỉ hiện thông báo (không tab, không chức năng nào)
   if (appBlock?.block) {
     return (
@@ -885,7 +1076,7 @@ export default function App() {
         <div className="mode-tabs">
           <button className={mode === 'search' ? 'active' : ''} onClick={() => setMode('search')}>🔎 Tìm kiếm clip</button>
           <button className={mode === 'analyze' ? 'active' : ''} onClick={() => setMode('analyze')}>🔍 Phân tích</button>
-          <button className={mode === 'cut' ? 'active' : ''} onClick={() => setMode('cut')}>✂️ Cắt clip</button>
+          {SHOW_CUT_TAB && <button className={mode === 'cut' ? 'active' : ''} onClick={() => setMode('cut')}>✂️ Cắt clip</button>}
           <button className={mode === 'tiktok' ? 'active' : ''} onClick={() => setMode('tiktok')}>📈 TikTok</button>
           <button className="btn-icon" title="Làm mới giao diện (app không có menu Reload sẵn)" onClick={requestReload}>🔄</button>
           <button className="btn-icon gear" title="Sửa prompt hỏi AI" onClick={() => setSettingsOpen(true)}>⚙️</button>
@@ -1214,6 +1405,11 @@ export default function App() {
                 placeholder="Thư mục lưu"
               />
               <button className="btn-icon" title="Chọn thư mục" onClick={pickJsonFolder}>📁</button>
+              <span className="json-color-switch" title="font_choice / text_color / bg_color trong file JSON — áp cho tất cả video khi lưu">
+                <span className="json-lbl">Màu:</span>
+                <label className="set-check"><input type="radio" name="colormode" checked={colorMode === 'random'} onChange={() => setColorMode('random')} /><span>🎲 Random (1–10)</span></label>
+                <label className="set-check"><input type="radio" name="colormode" checked={colorMode === 'default'} onChange={() => setColorMode('default')} /><span>Mặc định (1,1,1)</span></label>
+              </span>
               <button className="primary" onClick={saveAllJson} disabled={savingJson}>
                 {savingJson ? 'Đang lưu...' : '⬇ Lưu tất cả JSON (' + rows.filter(r => analysis[r.key]?.status === 'ready').length + ')'}
               </button>
@@ -1425,11 +1621,17 @@ export default function App() {
             <h3>Tính năng giới hạn</h3>
             <p>Nhập mật khẩu để dùng tab Theo dõi TikTok. Chỉ cần nhập một lần trên máy này.</p>
             <div className="tt-pass-wrap">
-              <input className="set-input tt-pass" type={ttPassShow ? 'text' : 'password'} placeholder="Mật khẩu" autoFocus
+              <input ref={ttPassRef} className="set-input tt-pass" type={ttPassShow ? 'text' : 'password'} placeholder="Mật khẩu"
                 value={ttPass} onChange={e => setTtPass(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') ttUnlock() }} />
               <button type="button" className="tt-pass-eye" title={ttPassShow ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
-                onClick={() => setTtPassShow(v => !v)}>{ttPassShow ? '🙈' : '👁️'}</button>
+                onMouseDown={e => e.preventDefault()} onClick={() => setTtPassShow(v => !v)}>
+                {ttPassShow ? (
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" /><circle cx="12" cy="12" r="3" /></svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" /><line x1="1" y1="1" x2="23" y2="23" /></svg>
+                )}
+              </button>
             </div>
             {ttPassErr && <div className="row-error">⚠ {ttPassErr}</div>}
             <div className="actions tt-pass-actions">
@@ -1472,6 +1674,15 @@ export default function App() {
             <button onClick={pasteTikTok} disabled={ttBusy.has('__new__')}>📋 Dán nhiều link</button>
             {ttItems.length > 0 && <button onClick={() => refreshTikTok(ttItems)} disabled={ttBusy.size > 0}>🔄 Cập nhật tất cả ({ttItems.length})</button>}
             <button onClick={ttLock} disabled={ttBusy.size > 0} title="Khóa lại tab — lần vào sau sẽ hỏi mật khẩu">🔒 Khóa lại</button>
+            {flatDepts().length > 0 && (
+              <label className="tt-assign-add" title="Phòng ban để xếp kênh mới vào">
+                <span className="json-lbl">Xếp vào:</span>
+                <select className="tt-dept-select" value={ttAddDept} onChange={e => setTtAddDept(e.target.value)} disabled={ttBusy.has('__new__')}>
+                  <option value="">— Chưa phân nhóm —</option>
+                  {flatDepts().map(d => <option key={d.id} value={d.id}>{' '.repeat((d.depth - 1) * 2) + d.name}</option>)}
+                </select>
+              </label>
+            )}
             <button className="primary" onClick={addTikTok} disabled={ttBusy.has('__new__') || ttRows.every((r, i) => ttRowInfo(r, i).state !== 'ok')}>
               {ttBusy.has('__new__') ? '⏳ Đang thêm...' : '➕ Theo dõi (' + ttRows.filter((r, i) => ttRowInfo(r, i).state === 'ok').length + ')'}
             </button>
@@ -1488,83 +1699,78 @@ export default function App() {
           {ttItems.length > 0 && <div className="tt-meta" style={{ marginTop: 8 }}>{ttItems.length} kênh đang theo dõi · mốc lưu theo ngày, so với mốc ngày trước</div>}
         </div>
 
+        {/* Phòng ban: cây tối đa 5 cấp, 1 gốc (công ty). KÊNH NẰM LỒNG dưới phòng ban của nó —
+            thu gọn/mở từng phòng để xem cho gọn; kênh chưa gán nằm ở mục "Chưa phân nhóm" bên dưới. */}
+        <div className="card tt-dept-card">
+          <div className="tt-dept-head">
+            <span className="json-lbl">🏢 Phòng ban ({flatDepts().length}) · {ttItems.length} kênh</span>
+            {ttDepts.length === 0 ? (
+              <button className="primary" onClick={() => createDept(null)} disabled={ttDeptBusy}>➕ Tạo cấp cao nhất (công ty)</button>
+            ) : (
+              <span className="tt-dept-headtools">
+                <button onClick={() => setTtCollapsed(new Set())} title="Mở tất cả phòng ban">▾ Mở hết</button>
+                <button onClick={() => setTtCollapsed(new Set([...flatDepts().map(d => d.id), '__none__']))} title="Thu gọn tất cả">▸ Thu gọn hết</button>
+              </span>
+            )}
+          </div>
+          {ttDepts.length === 0 && (
+            <div className="tt-meta">Chưa có phòng ban. Tạo cấp cao nhất (công ty) rồi thêm phòng con bên trong để nhóm/quản lý kênh — tối đa {MAX_DEPT_DEPTH} cấp.</div>
+          )}
+          {ttDepts.length > 0 && (
+            <div className="tt-dept-tree">
+              {(function renderDept(nodes) {
+                return nodes.map(d => {
+                  const mine = ttItems.filter(it => it.deptId === d.id)
+                  const total = countInSubtree(d)
+                  const open = !ttCollapsed.has(d.id)
+                  const hasBody = mine.length > 0 || (d.children?.length || 0) > 0
+                  return (
+                    <div className="tt-dept-node" key={d.id}>
+                      {/* Bấm vào cả dòng (tên/badge) để đóng-mở như accordion; các nút hành động không lan sự kiện */}
+                      <div className={'tt-dept-row' + (hasBody ? ' clickable' : '') + (open ? ' open' : ' closed')}
+                        onClick={() => { if (hasBody) toggleTtCollapse(d.id) }} title={hasBody ? (open ? 'Bấm để thu gọn' : 'Bấm để mở') : ''}>
+                        <span className={'tt-dept-chevron' + (open ? ' open' : '')} aria-hidden="true">{hasBody ? '▸' : '·'}</span>
+                        <span className="tt-dept-name">{d.depth === 1 ? '🏢' : '📁'} {d.name}</span>
+                        <span className="tt-dept-badge">cấp {d.depth}{total ? ' · ' + total + ' kênh' : ''}{!open && total ? ' (đang thu gọn)' : ''}</span>
+                        <span className="tt-dept-actions" onClick={e => e.stopPropagation()}>
+                        {d.depth < MAX_DEPT_DEPTH && <button className="btn-icon" title="Thêm phòng con" onClick={() => createDept(d.id)} disabled={ttDeptBusy}>➕</button>}
+                        <button className="btn-icon" title="Đổi tên" onClick={() => renameDeptUi(d)} disabled={ttDeptBusy}>✏️</button>
+                        <button className="btn-icon" title="Xóa phòng ban" onClick={() => removeDeptUi(d)} disabled={ttDeptBusy}>🗑</button>
+                        </span>
+                      </div>
+                      {open && hasBody && (
+                        <div className="tt-dept-children">
+                          {mine.map(renderTtCard)}
+                          {d.children?.length > 0 && renderDept(d.children)}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })
+              })(ttDepts)}
+            </div>
+          )}
+        </div>
+
         <div className="search-res">
           {ttLoaded && ttItems.length === 0 && (
             <div className="sr-card tt-empty">Chưa theo dõi kênh nào. Dán link kênh TikTok ở trên rồi bấm <b>Theo dõi</b> — app sẽ lưu số follow hôm nay, hôm sau mở lại là thấy tăng/giảm.</div>
           )}
-          {ttItems.map(it => {
-            const busy = ttBusy.has(it.handle)
-            const err = ttErrors[it.handle]
-            const L = it.latest
-            const stale = L && L.day !== ttToday()
-            const hist = [...(it.history || [])].reverse()
+          {(() => {
+            const none = ttUnassigned()
+            if (!none.length) return null
+            const open = !ttCollapsed.has('__none__')
             return (
-              <div className={'sr-card' + (err ? ' bad' : '')} key={it.handle}>
-                <div className="tt-card">
-                  {it.avatar ? <img className="tt-avatar" src={it.avatar} alt="" referrerPolicy="no-referrer" /> : <div className="tt-avatar ph">🎵</div>}
-                  <div>
-                    <div className="tt-name">
-                      <a href={it.url} target="_blank" rel="noreferrer">{it.nickname || it.handle}</a>
-                      {it.verified && <span title="Đã xác minh"> ✓</span>}
-                      <span className="tt-handle">@{it.handle}</span>
-                    </div>
-                    {L ? (
-                      <>
-                        <div className="tt-stats">
-                          <span><b className="tt-follow">{fmtNum(L.followers)}</b> follower
-                            {it.delta && (
-                              <span className={'tt-delta ' + deltaClass(it.delta.followers)} title={'So với mốc ' + fmtDay(it.previous?.day) + ' (' + fmtNum(it.previous?.followers) + ')'}>
-                                {fmtDelta(it.delta.followers)} {it.daysBetween === 1 ? 'so với hôm trước' : 'so với ' + it.daysBetween + ' ngày trước'}
-                              </span>
-                            )}
-                            {!it.delta && <span className="tt-delta flat">mốc đầu — mai so sánh</span>}
-                          </span>
-                          <span><b>{fmtNum(L.following)}</b> following</span>
-                          <span><b>{fmtShort(L.hearts)}</b> tim{it.delta && it.delta.hearts ? <span className={'tt-delta ' + deltaClass(it.delta.hearts)}>{fmtDelta(it.delta.hearts)}</span> : null}</span>
-                          <span><b>{fmtNum(L.videos)}</b> video{it.delta && it.delta.videos ? <span className={'tt-delta ' + deltaClass(it.delta.videos)}>{fmtDelta(it.delta.videos)}</span> : null}</span>
-                        </div>
-                        <div className="tt-meta">
-                          {busy ? '⏳ Đang đọc số liệu mới...' : ('Cập nhật lúc ' + fmtWhen(L.at) + (stale ? ' (chưa có mốc hôm nay)' : ''))}
-                          {it.first && it.deltaFromFirst != null && (' · từ ' + fmtDay(it.first.day) + ' (' + it.daysFromFirst + ' ngày): ' + fmtDelta(it.deltaFromFirst) + ' follower')}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="tt-meta">{busy ? '⏳ Đang đọc số liệu...' : 'Chưa có số liệu'}</div>
-                    )}
-                    {err && <div className="row-error">⚠ {err}</div>}
-                  </div>
-                  <div className="tt-tools">
-                    <button onClick={() => checkTikTok(it.url, it.handle)} disabled={busy}>{busy ? '⏳' : '🔄 Cập nhật'}</button>
-                    <button onClick={() => toggleTtHist(it.handle)} disabled={!hist.length}>{ttHistOpen.has(it.handle) ? '▲ Lịch sử' : '▼ Lịch sử (' + hist.length + ')'}</button>
-                    <button className="btn-icon" title="Bỏ theo dõi" onClick={() => removeTikTok(it)}>✕</button>
-                  </div>
+              <div className="tt-dept-node">
+                <div className={'tt-none-head clickable' + (open ? ' open' : ' closed')} onClick={() => toggleTtCollapse('__none__')} title={open ? 'Bấm để thu gọn' : 'Bấm để mở'}>
+                  <span className={'tt-dept-chevron' + (open ? ' open' : '')} aria-hidden="true">▸</span>
+                  <span>📂 Chưa phân nhóm</span>
+                  <span className="tt-dept-badge">{none.length} kênh{ttDepts.length > 0 ? ' · dùng ô chọn trên từng kênh để xếp vào phòng ban' : ''}</span>
                 </div>
-                {ttHistOpen.has(it.handle) && hist.length > 0 && (
-                  <div className="tt-hist">
-                    <table>
-                      <thead><tr><th>Ngày</th><th>Follower</th><th>+/− so ngày trước</th><th>Following</th><th>Tim</th><th>Video</th></tr></thead>
-                      <tbody>
-                        {hist.map((h, i) => {
-                          const prev = hist[i + 1]
-                          const d = prev ? h.followers - prev.followers : null
-                          return (
-                            <tr key={h.day}>
-                              <td>{fmtDay(h.day)} <span style={{ color: '#6f7490' }}>{fmtWhen(h.at).slice(0, 5)}</span></td>
-                              <td><b style={{ color: '#f1f2f8' }}>{fmtNum(h.followers)}</b></td>
-                              <td className={d == null ? '' : deltaClass(d)}>{d == null ? '—' : fmtDelta(d)}</td>
-                              <td>{fmtNum(h.following)}</td>
-                              <td>{fmtNum(h.hearts)}</td>
-                              <td>{fmtNum(h.videos)}</td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                {open && <div className="tt-dept-children">{none.map(renderTtCard)}</div>}
               </div>
             )
-          })}
+          })()}
         </div>
         </>
       )}
@@ -1738,6 +1944,9 @@ function SettingsModal({ settings, onClose, onSaved, probeUrl }) {
   const [langDraft, setLangDraft] = useState(settings?.language || 'Tây Ban Nha')
   const [speedDraft, setSpeedDraft] = useState(settings?.speedMode === 'quality' ? 'quality' : 'fast')
   const [modelDraft, setModelDraft] = useState(settings?.model || 'gemini-3.6-flash')
+  // Ngưỡng nổi bật kênh TikTok: chuỗi rỗng = tắt; null từ server (đã tắt) -> ô trống
+  const [hotDraft, setHotDraft] = useState(settings?.tiktokHotDelta == null && settings ? '' : String(settings?.tiktokHotDelta ?? 100))
+  const [starDraft, setStarDraft] = useState(settings?.tiktokStarTotal == null && settings ? '' : String(settings?.tiktokStarTotal ?? 100000))
   const [models, setModels] = useState(FALLBACK_MODELS)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -1857,6 +2066,29 @@ function SettingsModal({ settings, onClose, onSaved, probeUrl }) {
     reader.readAsText(file)
   }
 
+  // Xóa hết API key NGAY (không cần bấm Lưu) — gọi thẳng server, cập nhật lại giao diện.
+  const clearAllKeys = async () => {
+    if (!confirm('Xóa hết API key đã lưu?\n\nApp sẽ không phân tích được cho tới khi nhập key mới. (Cookie YouTube nếu có vẫn giữ nguyên.)')) return
+    setSaving(true)
+    setError('')
+    try {
+      const res = await fetch(`${API}/api/settings`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ geminiKeys: [] }),
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d?.message || `HTTP ${res.status}`)
+      setKeyDraft('')
+      setClearKeys(false)
+      setKeyChecks(null)
+      onSaved(d)
+      alert('✓ Đã xóa hết API key. Hiện đang lưu ' + d.keyCount + ' key.')
+    } catch (e) {
+      setError('Không xóa được key: ' + (e?.message || e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const save = async () => {
     setSaving(true)
     setError('')
@@ -1876,6 +2108,9 @@ function SettingsModal({ settings, onClose, onSaved, probeUrl }) {
           model: modelDraft,
           speedMode: speedDraft,
           language: langDraft,
+          // để trống = tắt (null); có số (kể cả 0) = ngưỡng thật
+          tiktokHotDelta: hotDraft.trim() === '' ? null : Math.max(0, Math.round(Number(hotDraft) || 0)),
+          tiktokStarTotal: starDraft.trim() === '' ? null : Math.max(0, Math.round(Number(starDraft) || 0)),
         }),
       })
       const d = await res.json()
@@ -1927,6 +2162,19 @@ function SettingsModal({ settings, onClose, onSaved, probeUrl }) {
           </label>
         </div>
 
+        <label className="set-label">Kênh TikTok nổi bật</label>
+        <div className="set-thresholds">
+          <label className="set-threshold">
+            <span>🔥 Tăng follow trong ngày ≥</span>
+            <input className="set-input set-num" type="number" min="0" step="1" value={hotDraft} onChange={e => setHotDraft(e.target.value)} />
+          </label>
+          <label className="set-threshold">
+            <span>⭐ Tổng follow ≥</span>
+            <input className="set-input set-num" type="number" min="0" step="1" value={starDraft} onChange={e => setStarDraft(e.target.value)} />
+          </label>
+        </div>
+        <p className="set-note">Kênh đạt ngưỡng sẽ có viền sáng + biểu tượng ở góc trong tab TikTok. 🔥 chỉ tính khi kênh đã có mốc của ngày trước để so. Nhập <b>0</b> = mọi kênh không giảm đều cháy; <b>để trống</b> = tắt.</p>
+
         {settings?.configError && (
           <p className="set-error">⚠ {settings.configError}<br />File cài đặt: <code>{settings.configFile}</code></p>
         )}
@@ -1951,8 +2199,8 @@ function SettingsModal({ settings, onClose, onSaved, probeUrl }) {
             <input type="file" accept=".txt,text/plain" hidden onChange={importKeysFile} />
           </label>
           {settings?.keyCount > 0 && (
-            <> <button className="set-reset set-clear-keys" onClick={() => { setKeyDraft(''); setClearKeys(true) }}>
-              {clearKeys ? '✓ Sẽ xóa hết key khi Lưu' : '🗑 Xóa hết key đã lưu'}
+            <> <button className="set-reset set-clear-keys" onClick={clearAllKeys} disabled={saving}>
+              🗑 Xóa hết key đã lưu
             </button></>
           )}
           {(settings?.keyCount > 0 || keyDraft.trim()) && (

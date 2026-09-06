@@ -60,6 +60,15 @@ async function startBackend() {
     return result.canceled ? null : result.filePaths[0]
   }
 
+  // Kéo cửa sổ app lên trước & focus (dùng cho ô nhập mật khẩu TikTok: nếu OS chưa focus cửa sổ
+  // thì input.focus() bên trong trang là vô tác dụng).
+  global.__electronFocusWindow = () => {
+    if (!mainWindow) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+
   // Mở thư mục trong file explorer bằng API của Electron — không cần PowerShell
   global.__electronRevealFolder = (folder, file) => {
     if (file && fs.existsSync(file)) shell.showItemInFolder(file)

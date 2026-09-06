@@ -11,6 +11,7 @@ import { segCountBlock } from '../src/parse.js'
 import { searchChannel, isChannelUrl } from './channel-search.js'
 import { loadCookie, saveCookie, clearCookie, parseCookieInput, checkLogin, probeAsk, analyzeViaCookieAsk, NO_COOKIE_MESSAGE, debugDirPath } from './youtube-cookie.js'
 import { isTikTokUrl, tiktokHandle, tiktokProfileUrl, fetchTikTokStats, appendSnapshot, summarizeHistory, verifyTikTokPassword } from './tiktok.js'
+import { validateNewDept, addDept, renameDept, canRemoveDept, removeDept, isValidAssign, deptTree, deptById } from './tiktok-depts.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT) || 3001
@@ -75,6 +76,13 @@ if (appControlTimer.unref) appControlTimer.unref()
 
 app.get('/api/app-control', (req, res) => {
   res.json({ ok: true, block: appControl.block, title: appControl.title, message: appControl.message })
+})
+
+// Cho phép giao diện yêu cầu app tự kéo cửa sổ lên & focus (app desktop). Cần cho ô nhập mật
+// khẩu TikTok: nếu cửa sổ chưa được hệ điều hành focus thì input.focus() ở web là no-op.
+app.post('/api/focus-window', (req, res) => {
+  try { if (typeof global.__electronFocusWindow === 'function') global.__electronFocusWindow() } catch {}
+  res.json({ ok: true, electron: typeof global.__electronFocusWindow === 'function' })
 })
 app.use((req, res, next) => {
   if (!appControl.block) return next()
@@ -547,6 +555,9 @@ app.post('/api/save-text', (req, res) => {
 function tiktokTrackedList(cfg) {
   return Array.isArray(cfg.tiktokTracked) ? cfg.tiktokTracked : []
 }
+function tiktokDeptList(cfg) {
+  return Array.isArray(cfg.tiktokDepartments) ? cfg.tiktokDepartments : []
+}
 function tiktokItemView(item) {
   const s = summarizeHistory(item.history)
   return {
@@ -556,6 +567,7 @@ function tiktokItemView(item) {
     avatar: item.avatar || '',
     verified: Boolean(item.verified),
     addedAt: item.addedAt || null,
+    deptId: item.deptId || null,
     ...s,
     history: (item.history || []).slice(-60),
   }
@@ -585,8 +597,66 @@ const requireTikTokUnlock = (req, res, next) => {
 }
 
 app.get('/api/tiktok/tracked', requireTikTokUnlock, (req, res) => {
-  const list = tiktokTrackedList(loadConfig())
-  res.json({ ok: true, items: list.map(tiktokItemView) })
+  const cfg = loadConfig()
+  res.json({ ok: true, items: tiktokTrackedList(cfg).map(tiktokItemView), departments: deptTree(tiktokDeptList(cfg)) })
+})
+
+// ===== Phòng ban TikTok (cây tối đa 5 cấp, 1 gốc = công ty) =====
+let deptSeq = 0
+const newDeptId = () => 'd' + Date.now().toString(36) + (deptSeq++).toString(36)
+
+app.post('/api/tiktok/dept', requireTikTokUnlock, (req, res) => {
+  const cfg = loadConfig()
+  const depts = tiktokDeptList(cfg)
+  const name = String(req.body?.name || '').trim()
+  const parentId = req.body?.parentId ? String(req.body.parentId) : null
+  const v = validateNewDept(depts, { name, parentId })
+  if (!v.ok) return res.status(400).json({ ok: false, message: v.message })
+  const dept = { id: newDeptId(), name, parentId, createdAt: Date.now() }
+  saveConfig({ tiktokDepartments: addDept(depts, dept) })
+  res.json({ ok: true, departments: deptTree(tiktokDeptList(loadConfig())) })
+})
+
+app.post('/api/tiktok/dept/rename', requireTikTokUnlock, (req, res) => {
+  const cfg = loadConfig()
+  const depts = tiktokDeptList(cfg)
+  const id = String(req.body?.id || '')
+  const name = String(req.body?.name || '').trim()
+  if (!name) return res.status(400).json({ ok: false, message: 'Chưa nhập tên phòng ban' })
+  if (!deptById(depts, id)) return res.status(404).json({ ok: false, message: 'Phòng ban không tồn tại' })
+  saveConfig({ tiktokDepartments: renameDept(depts, id, name.slice(0, 60)) })
+  res.json({ ok: true, departments: deptTree(tiktokDeptList(loadConfig())) })
+})
+
+app.post('/api/tiktok/dept/remove', requireTikTokUnlock, (req, res) => {
+  const cfg = loadConfig()
+  const depts = tiktokDeptList(cfg)
+  const id = String(req.body?.id || '')
+  const can = canRemoveDept(depts, id)
+  if (!can.ok) return res.status(400).json({ ok: false, message: can.message })
+  // Kênh trong phòng bị xóa -> về "chưa phân nhóm"
+  const list = tiktokTrackedList(cfg).map(x => (x.deptId === id ? { ...x, deptId: null } : x))
+  saveConfig({ tiktokDepartments: removeDept(depts, id), tiktokTracked: list })
+  const c2 = loadConfig()
+  res.json({ ok: true, departments: deptTree(tiktokDeptList(c2)), items: tiktokTrackedList(c2).map(tiktokItemView) })
+})
+
+// Gán / chuyển kênh sang phòng ban (deptId null = bỏ nhóm)
+app.post('/api/tiktok/assign', requireTikTokUnlock, (req, res) => {
+  const cfg = loadConfig()
+  const depts = tiktokDeptList(cfg)
+  const handle = String(req.body?.handle || '').toLowerCase().replace(/^@/, '')
+  const deptId = req.body?.deptId ? String(req.body.deptId) : null
+  if (!isValidAssign(depts, deptId)) return res.status(400).json({ ok: false, message: 'Phòng ban không tồn tại' })
+  let found = false
+  const list = tiktokTrackedList(cfg).map(x => {
+    if (x.handle !== handle) return x
+    found = true
+    return { ...x, deptId }
+  })
+  if (!found) return res.status(404).json({ ok: false, message: 'Không tìm thấy kênh' })
+  saveConfig({ tiktokTracked: list })
+  res.json({ ok: true, items: tiktokTrackedList(loadConfig()).map(tiktokItemView) })
 })
 
 // Kiểm tra 1 kênh: lấy số liệu hiện tại, ghi mốc hôm nay, trả về kèm chênh lệch so với mốc ngày trước.
@@ -606,9 +676,12 @@ app.post('/api/tiktok/check', requireTikTokUnlock, async (req, res) => {
   const list = tiktokTrackedList(cfg).map(x => ({ ...x }))
   // TikTok có thể trả handle chuẩn khác chữ hoa/thường người dùng gõ — khóa theo handle TikTok trả
   const key = stats.handle || handle
+  // Phòng ban để gán khi THÊM MỚI (nếu client gửi deptId hợp lệ)
+  const wantDept = req.body?.deptId ? String(req.body.deptId) : null
+  const deptId = isValidAssign(tiktokDeptList(cfg), wantDept) ? wantDept : null
   let item = list.find(x => x.handle === key) || list.find(x => x.handle === handle)
   if (!item) {
-    item = { handle: key, url: tiktokProfileUrl(key), addedAt: Date.now(), history: [] }
+    item = { handle: key, url: tiktokProfileUrl(key), addedAt: Date.now(), history: [], deptId }
     list.push(item)
   }
   item.handle = key
@@ -644,8 +717,16 @@ app.get('/api/settings', (req, res) => {
     model: cfg.model || DEFAULT_MODEL,
     speedMode: cfg.speedMode === 'quality' ? 'quality' : 'fast',
     language: cfg.language || 'Tây Ban Nha',
+    // Ngưỡng nổi bật kênh TikTok: tăng follow/ngày >= hot -> 🔥; tổng follow >= star -> ⭐.
+    // null = tắt (người dùng để trống); chưa từng đặt -> mặc định 100 / 100000. 0 là ngưỡng thật (>= 0).
+    tiktokHotDelta: thresholdOut(cfg.tiktokHotDelta, 100),
+    tiktokStarTotal: thresholdOut(cfg.tiktokStarTotal, 100000),
   })
 })
+function thresholdOut(v, dflt) {
+  if (v === null) return null
+  return Number.isFinite(v) ? v : dflt
+}
 
 app.post('/api/settings', (req, res) => {
   const patch = {}
@@ -653,8 +734,10 @@ app.post('/api/settings', (req, res) => {
   // Nhiều key một lần: mỗi dòng / phẩy / khoảng trắng một key. Mảng rỗng = xóa hết key.
   if (Array.isArray(req.body?.geminiKeys)) {
     patch.geminiKeys = req.body.geminiKeys.map(k => String(k || '').trim()).filter(Boolean)
-    // Lưu danh sách key mới thì bỏ luôn key lẻ cũ (geminiKey) để không lẫn key hỏng vào xoay vòng
-    if (patch.geminiKeys.length) patch.geminiKey = ''
+    // Lưu danh sách key mới, HOẶC xóa hết (mảng rỗng) -> đều bỏ luôn key lẻ cũ (geminiKey):
+    // lưu key mới thì tránh lẫn key hỏng vào xoay vòng; xóa hết thì phải xóa cả key lẻ, không
+    // thì "xóa hết" mà vẫn còn 1 key sót lại.
+    patch.geminiKey = ''
     keyCursor = 0
   }
   if (typeof req.body?.prompt === 'string') patch.prompt = req.body.prompt.trim()
@@ -662,6 +745,14 @@ app.post('/api/settings', (req, res) => {
   if (typeof req.body?.appendFormatRules === 'boolean') patch.appendFormatRules = req.body.appendFormatRules
   if (req.body?.speedMode === 'fast' || req.body?.speedMode === 'quality') patch.speedMode = req.body.speedMode
   if (typeof req.body?.language === 'string' && req.body.language.trim()) patch.language = req.body.language.trim().slice(0, 40)
+  // Ngưỡng nổi bật TikTok: số nguyên >= 0 (0 = ngưỡng thật, tức >= 0); null / chuỗi rỗng = tắt
+  for (const k of ['tiktokHotDelta', 'tiktokStarTotal']) {
+    if (req.body?.[k] === undefined) continue
+    const raw = req.body[k]
+    if (raw === null || raw === '') { patch[k] = null; continue }
+    const n = Math.round(Number(raw))
+    if (Number.isFinite(n) && n >= 0) patch[k] = n
+  }
   const cfg = saveConfig(patch)
   res.json({
     ok: true,
@@ -676,6 +767,8 @@ app.post('/api/settings', (req, res) => {
     model: cfg.model || DEFAULT_MODEL,
     speedMode: cfg.speedMode === 'quality' ? 'quality' : 'fast',
     language: cfg.language || 'Tây Ban Nha',
+    tiktokHotDelta: thresholdOut(cfg.tiktokHotDelta, 100),
+    tiktokStarTotal: thresholdOut(cfg.tiktokStarTotal, 100000),
   })
 })
 

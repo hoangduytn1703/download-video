@@ -747,8 +747,71 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-
 .tt-progress-txt { font-size: 12.5px; color: #a9adc4; margin-top: 5px; }
 .tt-pass-wrap { position: relative; margin-top: 14px; }
 .tt-pass { width: 100%; box-sizing: border-box; margin: 0; text-align: center; letter-spacing: 2px; padding-right: 42px; }
-.tt-pass-eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; padding: 4px 6px; cursor: pointer; font-size: 16px; line-height: 1; }
-.tt-pass-eye:hover { background: rgba(255,255,255,0.08); }
+/* Phòng ban TikTok */
+.tt-dept-card { margin-top: 12px; }
+.tt-dept-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.tt-dept-tree { display: flex; flex-direction: column; gap: 5px; }
+.tt-dept-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; background: rgba(255,255,255,0.04); border-radius: 8px; }
+.tt-dept-name { font-weight: 600; }
+.tt-dept-badge { font-size: 11.5px; color: #6f7490; }
+.tt-dept-select { background: rgba(10,8,20,0.5); color: #e6e7ee; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 4px 8px; font-size: 12.5px; max-width: 180px; }
+.tt-assign-add { display: inline-flex; align-items: center; gap: 6px; }
+/* Kênh lồng dưới phòng ban + thu gọn/mở */
+.tt-dept-toggle { background: none; border: none; color: #a9adc4; cursor: pointer; width: 22px; padding: 0; font-size: 12px; }
+.tt-dept-toggle:hover { color: #f1f2f8; }
+/* Accordion: cả dòng phòng ban bấm được, mũi tên xoay khi mở */
+.tt-dept-row.clickable, .tt-none-head.clickable { cursor: pointer; user-select: none; }
+.tt-dept-row.clickable:hover, .tt-none-head.clickable:hover { background: rgba(167,139,250,0.12); }
+.tt-dept-row.closed { border-left: 3px solid rgba(167,139,250,0.55); }
+.tt-dept-chevron { display: inline-block; width: 16px; color: #c4b5fd; font-size: 13px; transition: transform 0.18s ease; }
+.tt-dept-chevron.open { transform: rotate(90deg); }
+.tt-dept-actions { display: inline-flex; gap: 4px; margin-left: auto; }
+/* Dòng lịch sử có ngày tăng >= ngưỡng: viền radiant quanh dòng + bold + 🔥 */
+.tt-hist table { border-collapse: separate; border-spacing: 0; }
+.tt-hist tr.hot td { font-weight: 700; color: #fff; background: linear-gradient(90deg, rgba(249,115,22,0.16), rgba(236,72,153,0.14), rgba(139,92,246,0.14));
+  border-top: 2px solid #f97316; border-bottom: 2px solid #ec4899; }
+.tt-hist tr.hot td:first-child { border-left: 2px solid #f97316; border-radius: 10px 0 0 10px; }
+.tt-hist tr.hot td:last-child { border-right: 2px solid #8b5cf6; border-radius: 0 10px 10px 0; }
+.tt-hist tr.hot td.up { color: #86efac; text-shadow: 0 0 10px rgba(74,222,128,0.45); }
+.tt-row-fire { display: inline-block; margin-right: 5px; animation: tt-flicker 1.4s ease-in-out infinite alternate; filter: drop-shadow(0 0 6px rgba(249,115,22,0.7)); }
+/* Badge chênh lệch / mốc đầu không được rớt chữ giữa chừng */
+.tt-delta { white-space: nowrap; display: inline-block; }
+.tt-stats > span { display: inline-flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.tt-dept-children { margin-left: 18px; border-left: 1px dashed rgba(255,255,255,0.12); padding-left: 10px; margin-top: 6px; display: flex; flex-direction: column; gap: 8px; }
+.tt-dept-children .sr-card { margin-top: 0; }
+.tt-dept-node { margin-bottom: 6px; }
+.tt-dept-node .tt-dept-node { margin-left: 0; }
+.tt-dept-headtools { margin-left: auto; display: flex; gap: 6px; }
+.tt-dept-headtools button { padding: 6px 10px; font-size: 12.5px; }
+.tt-dept-toggle:disabled { opacity: 0.35; cursor: default; }
+.tt-none-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px; color: #a9adc4; font-weight: 600; }
+/* Nổi bật: viền radiant (gradient) + icon góc */
+.sr-card.hot, .sr-card.star { position: relative; border: 2px solid transparent;
+  background: linear-gradient(rgba(20,17,34,1), rgba(20,17,34,1)) padding-box,
+              linear-gradient(135deg, #f97316, #ec4899, #8b5cf6) border-box;
+  box-shadow: 0 0 18px rgba(236,72,153,0.28); }
+.sr-card.star:not(.hot) { background: linear-gradient(rgba(20,17,34,1), rgba(20,17,34,1)) padding-box,
+              linear-gradient(135deg, #facc15, #f59e0b, #8b5cf6) border-box;
+  box-shadow: 0 0 18px rgba(250,204,21,0.28); }
+.sr-card.hot.star { background: linear-gradient(rgba(20,17,34,1), rgba(20,17,34,1)) padding-box,
+              linear-gradient(135deg, #f97316, #ec4899, #facc15, #8b5cf6) border-box;
+  box-shadow: 0 0 22px rgba(236,72,153,0.32), 0 0 22px rgba(250,204,21,0.2); }
+.tt-badges { position: absolute; top: -12px; right: 10px; display: flex; gap: 4px; }
+.tt-badge { font-size: 18px; line-height: 1; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.5)); animation: tt-pop 0.35s ease-out; }
+.tt-badge.fire { animation: tt-pop 0.35s ease-out, tt-flicker 1.4s ease-in-out infinite alternate; }
+@keyframes tt-pop { from { transform: scale(0.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@keyframes tt-flicker { from { transform: scale(1) rotate(-4deg); } to { transform: scale(1.12) rotate(4deg); } }
+.set-thresholds { display: flex; gap: 18px; flex-wrap: wrap; }
+.set-threshold { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+.set-num { width: 120px; margin: 0; }
+
+.tt-dept-tag { font-size: 11.5px; color: #a9adc4; background: rgba(167,139,250,0.14); padding: 1px 8px; border-radius: 999px; margin-left: 8px; font-weight: 400; }
+
+.json-color-switch { display: inline-flex; align-items: center; gap: 8px; padding-left: 6px; }
+.json-color-switch .set-check { font-size: 12.5px; }
+
+.tt-pass-eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; border-radius: 6px; padding: 4px 6px; cursor: pointer; line-height: 0; color: #a9adc4; display: flex; }
+.tt-pass-eye:hover { background: rgba(255,255,255,0.08); color: #f1f2f8; }
 .tt-pass-actions { justify-content: center; margin-top: 14px; }
 .tt-pass-actions .primary { margin-left: 0; margin-top: 0; }
 @media (max-width: 720px) { .tt-card { grid-template-columns: 44px 1fr; } .tt-tools { grid-column: 1 / -1; justify-content: flex-start; } }

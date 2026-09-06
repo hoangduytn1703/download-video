@@ -175,6 +175,16 @@ export function segmentsToJson(url, name, segments, options = {}) {
   }
 }
 
+// Sinh bộ màu cho JSON (font_choice / text_color / bg_color).
+// mode 'default' -> cả 3 = "1"; mode 'random' -> mỗi số ngẫu nhiên 1..10 (độc lập nhau).
+export function makeColorChoice(mode = 'default') {
+  if (mode === 'random') {
+    const r = () => String(1 + Math.floor(Math.random() * 10))
+    return { fontChoice: r(), textColor: r(), bgColor: r() }
+  }
+  return { fontChoice: '1', textColor: '1', bgColor: '1' }
+}
+
 // Ràng buộc số đoạn khi người dùng chọn "số đoạn cụ thể" cho một link.
 export function segCountBlock(n) {
   const count = Math.round(Number(n))
