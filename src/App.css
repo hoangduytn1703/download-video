@@ -814,6 +814,8 @@ input:disabled, textarea:disabled, select:disabled { opacity: 0.55; cursor: not-
 .tt-pass-eye:hover { background: rgba(255,255,255,0.08); color: #f1f2f8; }
 .tt-pass-actions { justify-content: center; margin-top: 14px; }
 .tt-pass-actions .primary { margin-left: 0; margin-top: 0; }
+.tt-prompt-label { margin: 0 0 12px; font-size: 14.5px; color: #f2f3fa; }
+.tt-prompt-input { width: 100%; box-sizing: border-box; margin: 0; }
 @media (max-width: 720px) { .tt-card { grid-template-columns: 44px 1fr; } .tt-tools { grid-column: 1 / -1; justify-content: flex-start; } }
 
 /* Logo app trên header */

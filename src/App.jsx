@@ -90,6 +90,11 @@ export default function App() {
   const [ttDepts, setTtDepts] = useState([]) // cây phòng ban (từ server), mỗi node {id,name,parentId,depth,children}
   const [ttAddDept, setTtAddDept] = useState('') // deptId sẽ gán khi thêm kênh mới (ô nhập)
   const [ttDeptBusy, setTtDeptBusy] = useState(false)
+  // Modal nhập chữ tự làm (thay window.prompt — không hoạt động trong Electron: BrowserWindow
+  // không hỗ trợ prompt() có ô nhập, gọi là trả về null ngay, im lặng, không hiện gì cả).
+  const [textPrompt, setTextPrompt] = useState(null) // { label, value, resolve } hoặc null
+  const textPromptRef = useRef(null)
+  const promptText = (label, initial = '') => new Promise(resolve => setTextPrompt({ label, value: initial, resolve }))
   const [ttCollapsed, setTtCollapsed] = useState(() => new Set()) // deptId (hoặc '__none__') đang thu gọn
   const [ttLoaded, setTtLoaded] = useState(false)
   const [ttBusy, setTtBusy] = useState(() => new Set()) // handle đang kiểm tra ('__new__' = đang thêm kênh mới)
@@ -525,12 +530,14 @@ export default function App() {
   }
   const createDept = async parentId => {
     const label = parentId ? 'Tên phòng con:' : 'Tên cấp cao nhất (công ty):'
-    const name = prompt(label)
+    // window.prompt() không hoạt động trong Electron (BrowserWindow không hỗ trợ, luôn trả null
+    // ngay lập tức, không hiện gì) — dùng modal tự làm thay thế (promptText, khai báo bên dưới).
+    const name = await promptText(label)
     if (name == null || !name.trim()) return
     await ttDeptApi('dept', { name: name.trim(), parentId: parentId || null })
   }
   const renameDeptUi = async d => {
-    const name = prompt('Đổi tên phòng ban:', d.name)
+    const name = await promptText('Đổi tên phòng ban:', d.name)
     if (name == null || !name.trim() || name.trim() === d.name) return
     await ttDeptApi('dept/rename', { id: d.id, name: name.trim() })
   }
@@ -749,6 +756,13 @@ export default function App() {
       document.removeEventListener('visibilitychange', onWake)
     }
   }, [mode, ttUnlocked])
+
+  // Focus + chọn sẵn chữ trong ô modal nhập tên phòng ban khi vừa mở
+  useEffect(() => {
+    if (!textPrompt) return
+    const raf = requestAnimationFrame(() => textPromptRef.current?.select())
+    return () => cancelAnimationFrame(raf)
+  }, [textPrompt])
 
   const analyzeAll = async () => {
     if (!requireKey()) return
@@ -1637,6 +1651,25 @@ export default function App() {
             <div className="actions tt-pass-actions">
               <button onClick={() => { setTtPassErr(''); setTtPass(''); setMode('analyze') }}>← Quay lại</button>
               <button className="primary" onClick={ttUnlock} disabled={!ttPass}>🔓 Mở khóa</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal nhập chữ tự làm — thay window.prompt (không hoạt động trong Electron) */}
+      {textPrompt && (
+        <div className="overlay" onClick={e => { if (e.target === e.currentTarget) { textPrompt.resolve(null); setTextPrompt(null) } }}>
+          <div className="overlay-card">
+            <p className="tt-prompt-label">{textPrompt.label}</p>
+            <input ref={textPromptRef} className="set-input tt-prompt-input" value={textPrompt.value}
+              onChange={e => setTextPrompt(p => ({ ...p, value: e.target.value }))}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { textPrompt.resolve(textPrompt.value); setTextPrompt(null) }
+                if (e.key === 'Escape') { textPrompt.resolve(null); setTextPrompt(null) }
+              }} />
+            <div className="actions tt-pass-actions">
+              <button onClick={() => { textPrompt.resolve(null); setTextPrompt(null) }}>Hủy</button>
+              <button className="primary" onClick={() => { textPrompt.resolve(textPrompt.value); setTextPrompt(null) }} disabled={!textPrompt.value.trim()}>✓ Xác nhận</button>
             </div>
           </div>
         </div>
