@@ -92,9 +92,11 @@ export default function App() {
   const [ttDeptBusy, setTtDeptBusy] = useState(false)
   // Modal nhập chữ tự làm (thay window.prompt — không hoạt động trong Electron: BrowserWindow
   // không hỗ trợ prompt() có ô nhập, gọi là trả về null ngay, im lặng, không hiện gì cả).
-  const [textPrompt, setTextPrompt] = useState(null) // { label, value, resolve } hoặc null
+  // multi=true -> textarea nhiều dòng (tạo nhiều phòng ban cùng lúc, mỗi dòng 1 tên); tắt cho
+  // cấp cao nhất (công ty) vì chỉ được đúng 1.
+  const [textPrompt, setTextPrompt] = useState(null) // { label, value, multi, resolve } hoặc null
   const textPromptRef = useRef(null)
-  const promptText = (label, initial = '') => new Promise(resolve => setTextPrompt({ label, value: initial, resolve }))
+  const promptText = (label, { initial = '', multi = false } = {}) => new Promise(resolve => setTextPrompt({ label, value: initial, multi, resolve }))
   const [ttCollapsed, setTtCollapsed] = useState(() => new Set()) // deptId (hoặc '__none__') đang thu gọn
   const [ttLoaded, setTtLoaded] = useState(false)
   const [ttBusy, setTtBusy] = useState(() => new Set()) // handle đang kiểm tra ('__new__' = đang thêm kênh mới)
@@ -528,16 +530,29 @@ export default function App() {
     } catch (e) { alert('Lỗi mạng: ' + (e?.message || e)); return null }
     finally { setTtDeptBusy(false) }
   }
+  // parentId = null: tạo cấp cao nhất (công ty) — chỉ 1, nên 1 dòng.
+  // parentId có giá trị: từ cấp 2 trở đi cho phép tạo NHIỀU phòng cùng lúc — mỗi dòng 1 tên,
+  // tạo tuần tự (server chỉ nhận 1 tên/lần), có thanh tiến trình giống lúc thêm nhiều kênh TikTok.
   const createDept = async parentId => {
-    const label = parentId ? 'Tên phòng con:' : 'Tên cấp cao nhất (công ty):'
-    // window.prompt() không hoạt động trong Electron (BrowserWindow không hỗ trợ, luôn trả null
-    // ngay lập tức, không hiện gì) — dùng modal tự làm thay thế (promptText, khai báo bên dưới).
-    const name = await promptText(label)
-    if (name == null || !name.trim()) return
-    await ttDeptApi('dept', { name: name.trim(), parentId: parentId || null })
+    if (!parentId) {
+      const name = await promptText('Tên cấp cao nhất (công ty):')
+      if (name == null || !name.trim()) return
+      await ttDeptApi('dept', { name: name.trim(), parentId: null })
+      return
+    }
+    const text = await promptText('Tên phòng con (mỗi dòng 1 phòng, tạo được nhiều cùng lúc):', { multi: true })
+    if (text == null) return
+    const names = text.split('\n').map(s => s.trim()).filter(Boolean)
+    if (!names.length) return
+    for (let i = 0; i < names.length; i++) {
+      if (names.length > 1) setTtProgress({ label: 'Đang tạo phòng ban', done: i, total: names.length, current: names[i] })
+      const ok = await ttDeptApi('dept', { name: names[i], parentId })
+      if (!ok) break // báo lỗi rồi (validate: trùng tầng/tên trống/quá 5 cấp...) — dừng, đừng tạo tiếp phần còn lại
+    }
+    if (names.length > 1) ttProgressDone(names.length)
   }
   const renameDeptUi = async d => {
-    const name = await promptText('Đổi tên phòng ban:', d.name)
+    const name = await promptText('Đổi tên phòng ban:', { initial: d.name })
     if (name == null || !name.trim() || name.trim() === d.name) return
     await ttDeptApi('dept/rename', { id: d.id, name: name.trim() })
   }
@@ -757,12 +772,17 @@ export default function App() {
     }
   }, [mode, ttUnlocked])
 
-  // Focus + chọn sẵn chữ trong ô modal nhập tên phòng ban khi vừa mở
+  // Focus + chọn sẵn chữ trong ô modal nhập tên phòng ban khi vừa MỞ (chỉ 1 lần lúc mở).
+  // BUG ĐÃ SỬA: dependency cũ là [textPrompt] (cả object) — object này đổi mỗi lần gõ 1 ký tự
+  // (setTextPrompt tạo object mới trong onChange), nên effect chạy lại và .select() SAU MỖI PHÍM,
+  // chọn lại toàn bộ chữ vừa gõ; ký tự kế tiếp gõ vào liền ghi đè lên vùng đang chọn -> mất hết,
+  // chỉ còn 1 ký tự cuối. Sửa: dùng cờ boolean (mở hay chưa) làm dependency, không phải cả object.
+  const textPromptOpen = Boolean(textPrompt)
   useEffect(() => {
-    if (!textPrompt) return
+    if (!textPromptOpen) return
     const raf = requestAnimationFrame(() => textPromptRef.current?.select())
     return () => cancelAnimationFrame(raf)
-  }, [textPrompt])
+  }, [textPromptOpen])
 
   const analyzeAll = async () => {
     if (!requireKey()) return
@@ -1661,15 +1681,29 @@ export default function App() {
         <div className="overlay" onClick={e => { if (e.target === e.currentTarget) { textPrompt.resolve(null); setTextPrompt(null) } }}>
           <div className="overlay-card">
             <p className="tt-prompt-label">{textPrompt.label}</p>
-            <input ref={textPromptRef} className="set-input tt-prompt-input" value={textPrompt.value}
-              onChange={e => setTextPrompt(p => ({ ...p, value: e.target.value }))}
-              onKeyDown={e => {
-                if (e.key === 'Enter') { textPrompt.resolve(textPrompt.value); setTextPrompt(null) }
-                if (e.key === 'Escape') { textPrompt.resolve(null); setTextPrompt(null) }
-              }} />
+            {textPrompt.multi ? (
+              <textarea ref={textPromptRef} className="set-input tt-prompt-input tt-prompt-textarea" rows={4} value={textPrompt.value}
+                placeholder={'Tên phòng 1\nTên phòng 2\n...'}
+                onChange={e => setTextPrompt(p => ({ ...p, value: e.target.value }))}
+                onKeyDown={e => {
+                  // Enter xuống dòng bình thường (nhiều tên); Ctrl/Cmd+Enter mới xác nhận luôn cho nhanh
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { textPrompt.resolve(textPrompt.value); setTextPrompt(null) }
+                  if (e.key === 'Escape') { textPrompt.resolve(null); setTextPrompt(null) }
+                }} />
+            ) : (
+              <input ref={textPromptRef} className="set-input tt-prompt-input" value={textPrompt.value}
+                onChange={e => setTextPrompt(p => ({ ...p, value: e.target.value }))}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { textPrompt.resolve(textPrompt.value); setTextPrompt(null) }
+                  if (e.key === 'Escape') { textPrompt.resolve(null); setTextPrompt(null) }
+                }} />
+            )}
+            {textPrompt.multi && <p className="tt-prompt-hint">Mỗi dòng 1 tên phòng ban · Ctrl+Enter để xác nhận nhanh</p>}
             <div className="actions tt-pass-actions">
               <button onClick={() => { textPrompt.resolve(null); setTextPrompt(null) }}>Hủy</button>
-              <button className="primary" onClick={() => { textPrompt.resolve(textPrompt.value); setTextPrompt(null) }} disabled={!textPrompt.value.trim()}>✓ Xác nhận</button>
+              <button className="primary" onClick={() => { textPrompt.resolve(textPrompt.value); setTextPrompt(null) }} disabled={!textPrompt.value.split('\n').some(s => s.trim())}>
+                ✓ Xác nhận{textPrompt.multi && textPrompt.value.split('\n').filter(s => s.trim()).length > 1 ? ' (' + textPrompt.value.split('\n').filter(s => s.trim()).length + ' phòng)' : ''}
+              </button>
             </div>
           </div>
         </div>
