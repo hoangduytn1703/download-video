@@ -67,6 +67,10 @@ async function startBackend() {
     if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.show()
     mainWindow.focus()
+    // Lỗi Electron đã biết: sau khi hộp thoại native alert()/confirm() đóng, webContents MẤT focus
+    // bàn phím dù cửa sổ vẫn active -> click vào ô nào cũng không gõ được cho tới khi blur/focus
+    // lại cửa sổ. webContents.focus() là cách khắc phục chính thức.
+    mainWindow.webContents.focus()
   }
 
   // Mở thư mục trong file explorer bằng API của Electron — không cần PowerShell

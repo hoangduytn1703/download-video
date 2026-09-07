@@ -127,6 +127,14 @@ export default function App() {
     // Biết trạng thái khóa tab TikTok ngay từ đầu -> bấm sang tab là modal (nếu khóa) hiện liền,
     // không phải chờ fetch lúc mở tab. Lỗi/không rõ -> coi như khóa (an toàn, hiện ô nhập mật khẩu).
     fetch(`${API}/api/tiktok/status`).then(r => r.json()).then(d => setTtUnlocked(Boolean(d.unlocked))).catch(() => setTtUnlocked(false))
+    // Lỗi Electron đã biết: sau khi hộp thoại native alert()/confirm() đóng (bằng chuột), vùng web
+    // mất focus bàn phím — click vào ô nhập nào cũng không gõ được cho tới khi blur/focus lại cửa sổ.
+    // Bọc lại 2 hàm này: gọi native xong thì nhờ app kéo focus về webContents (web thường: no-op).
+    const origAlert = window.alert.bind(window)
+    const origConfirm = window.confirm.bind(window)
+    const refocus = () => { fetch(`${API}/api/focus-window`, { method: 'POST' }).catch(() => {}) }
+    window.alert = (...a) => { const r = origAlert(...a); refocus(); return r }
+    window.confirm = (...a) => { const r = origConfirm(...a); refocus(); return r }
     fetch(`${API}/api/defaults`)
       .then(r => r.json())
       .then(d => {
@@ -780,8 +788,21 @@ export default function App() {
   const textPromptOpen = Boolean(textPrompt)
   useEffect(() => {
     if (!textPromptOpen) return
-    const raf = requestAnimationFrame(() => textPromptRef.current?.select())
-    return () => cancelAnimationFrame(raf)
+    // Giống ô mật khẩu: nhờ Electron kéo focus về webContents trước (sau confirm()/alert() native
+    // webContents thường mất focus), rồi thử focus tới khi con trỏ thật sự vào ô.
+    fetch(`${API}/api/focus-window`, { method: 'POST' }).catch(() => {})
+    let tries = 0
+    let timer = 0
+    const focusNow = () => {
+      const el = textPromptRef.current
+      if (!el) return
+      if (document.activeElement !== el) { el.focus({ preventScroll: true }); if (document.activeElement === el) el.select() }
+      if (document.activeElement !== el && tries++ < 80) timer = setTimeout(focusNow, 100)
+    }
+    const raf = requestAnimationFrame(focusNow)
+    const onWake = () => { const el = textPromptRef.current; if (el && document.activeElement !== el) el.focus({ preventScroll: true }) }
+    window.addEventListener('focus', onWake)
+    return () => { cancelAnimationFrame(raf); clearTimeout(timer); window.removeEventListener('focus', onWake) }
   }, [textPromptOpen])
 
   const analyzeAll = async () => {
